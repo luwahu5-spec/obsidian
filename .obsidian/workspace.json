@@ -1,0 +1,225 @@
+{
+  "main": {
+    "id": "ae9c7aa10380ecb7",
+    "type": "split",
+    "children": [
+      {
+        "id": "ba2bedf67a50b749",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "426f44da44610631",
+            "type": "leaf",
+            "state": {
+              "type": "graph",
+              "state": {},
+              "icon": "lucide-git-fork",
+              "title": "Graph view"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "vertical"
+  },
+  "left": {
+    "id": "510a09ef0843fc4b",
+    "type": "split",
+    "children": [
+      {
+        "id": "df0845c51b53986f",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "b3d3ef8b419d0222",
+            "type": "leaf",
+            "state": {
+              "type": "file-explorer",
+              "state": {
+                "sortOrder": "alphabetical",
+                "autoReveal": false,
+                "showSearch": true,
+                "searchQuery": ""
+              },
+              "icon": "lucide-folder-closed",
+              "title": "Files"
+            }
+          },
+          {
+            "id": "1def5f898af1ae4e",
+            "type": "leaf",
+            "state": {
+              "type": "search",
+              "state": {
+                "query": "",
+                "matchingCase": false,
+                "explainSearch": false,
+                "collapseAll": false,
+                "extraContext": false,
+                "sortOrder": "alphabetical"
+              },
+              "icon": "lucide-search",
+              "title": "Search"
+            }
+          },
+          {
+            "id": "d7a2184716b7fb2c",
+            "type": "leaf",
+            "state": {
+              "type": "bookmarks",
+              "state": {},
+              "icon": "lucide-bookmark",
+              "title": "Bookmarks"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "horizontal",
+    "width": 389.5
+  },
+  "right": {
+    "id": "df5e6ab0d202abfc",
+    "type": "split",
+    "children": [
+      {
+        "id": "b625323428c89b35",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "2599b45be149c98a",
+            "type": "leaf",
+            "state": {
+              "type": "backlink",
+              "state": {
+                "file": "Welcome.md",
+                "collapseAll": false,
+                "extraContext": false,
+                "sortOrder": "alphabetical",
+                "showSearch": false,
+                "searchQuery": "",
+                "backlinkCollapsed": false,
+                "unlinkedCollapsed": true
+              },
+              "icon": "links-coming-in",
+              "title": "Backlinks for Welcome"
+            }
+          },
+          {
+            "id": "438b8c5e2a772807",
+            "type": "leaf",
+            "state": {
+              "type": "outgoing-link",
+              "state": {
+                "file": "Welcome.md",
+                "linksCollapsed": false,
+                "unlinkedCollapsed": true
+              },
+              "icon": "links-going-out",
+              "title": "Outgoing links from Welcome"
+            }
+          },
+          {
+            "id": "de8981dc13279e56",
+            "type": "leaf",
+            "state": {
+              "type": "tag",
+              "state": {
+                "sortOrder": "frequency",
+                "useHierarchy": true,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-tags",
+              "title": "Tags"
+            }
+          },
+          {
+            "id": "483e6ae5792dc445",
+            "type": "leaf",
+            "state": {
+              "type": "all-properties",
+              "state": {
+                "sortOrder": "frequency",
+                "showSearch": true,
+                "searchQuery": ""
+              },
+              "icon": "lucide-archive",
+              "title": "All properties"
+            }
+          },
+          {
+            "id": "bcfe10fc299c1f53",
+            "type": "leaf",
+            "state": {
+              "type": "outline",
+              "state": {
+                "file": "Welcome.md",
+                "followCursor": false,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-list",
+              "title": "Outline of Welcome"
+            }
+          }
+        ],
+        "currentTab": 3
+      }
+    ],
+    "direction": "horizontal",
+    "width": 200
+  },
+  "left-ribbon": {
+    "hiddenItems": {
+      "switcher:Open quick switcher": false,
+      "graph:Open graph view": false,
+      "canvas:Create new canvas": false,
+      "daily-notes:Open today's daily note": false,
+      "templates:Insert template": false,
+      "command-palette:Open command palette": false,
+      "bases:Create new base": false,
+      "audio-recorder:Start/stop recording": false
+    }
+  },
+  "active": "426f44da44610631",
+  "lastOpenFiles": [
+    "AI Conversations/CORE API/2026-06-29 EF Core Hole.Id Key Error 500 in Prod.md",
+    "AI Conversations/CORE API/2026-04-22 Unit Tests Secretly Using Real SQL Server.md",
+    "Task Plan.md",
+    "AI Conversations/CORE API/2026-03-27 Deswik K92 Shift Integration API Design.md",
+    "Untitled 2",
+    "Untitled 1",
+    "Untitled",
+    "2026-09-09.md",
+    "Untitled.canvas",
+    "AI Conversations/CORE Web/2026-06-25 Upload Error Popup and CSV Import Mismatch.md",
+    "Untitled.base",
+    "AI Conversations/CORE API/2026-04-13 Park Log SQL Detective Queries.md",
+    "AI Conversations/CORE API/2026-08-27 SSO Enterprise Auth Ticket Breakdown.md",
+    "AI Conversations/CORE API/2026-08-04 Duplicate Rig Status Summaries Break Site Detail Page.md",
+    "AI Conversations/CORE API/2026-07-27 Stale Calibration Date and Rig Status Lost Update.md",
+    "AI Conversations/CORE API/2026-09-07 Production Hole Cleaning and Hole Ream Duration PRD Review.md",
+    "AI Conversations/CORE Web/2026-07-07 PRD Reamer Length Reconciliation Analysis and Executable Plan.md",
+    "AI Conversations/CORE Web/2026-06-26 Outstanding Length Excludes Recalculated Holes.md",
+    "AI Conversations/CORE Web/2026-07-07 Reamer Hierarchy Feature Explained.md",
+    "AI Conversations/CORE API/2026-09-03 Sync After Login Endpoints Feature Explained.md",
+    "AI Conversations/CORE API/2026-05-25 Sites API siteType Default and Drillers 403 Analysis.md",
+    "AI Conversations/CORE API/incident-report-shiftsummary-lambda.md",
+    "AI Conversations/CORE Web/2026-07-14 PRD Enterprise Authentication User Management Analysis.md",
+    "AI Conversations/CORE Web/2026-07-14 PRD Enterprise Authentication User Management Analysis.md.tmp.18116.cf84e0f8f2e9",
+    "AI Conversations/CORE Web/2026-08-27 BTokenRefresh Feature Explained.md",
+    "AI Conversations/CORE API/2026-07-14 Authentication Authorization and SSO IdP Brokering Feature Explained.md.tmp.82348.e3220334ade3",
+    "AI Conversations/CORE API/2026-07-14 Authentication Authorization and SSO IdP Brokering Feature Explained.md",
+    "AI Conversations/CORE API/2026-05-05 How Authorization Flows from Core Web to Core API.md",
+    "AI Conversations/CORE Web/2026-08-06 Archived Plan Summary Metadata Table Implementation.md",
+    "AI Conversations/CORE Web/2026-08-12 Plan Data Metadata Table Refactor Executable Plan.md",
+    "AI Conversations/Claude Workflow Playbook.md",
+    "AI Conversations/CORE API/2026-06-25 PostShift SQL Timeout Analysis.md",
+    "AI Conversations/CORE API/2026-06-19 PreStartData Payload and Dynamic Form IDs.md",
+    "AI Conversations/CORE API/2026-07-14 Authentication Authorization and SSO IdP Brokering Feature Explained.md.tmp.23012.34566f88421a",
+    "AI Conversations/CORE Web/2026-07-14 PRD Enterprise Authentication User Management Analysis.md.tmp.88964.7481088199c4",
+    "AI Conversations/README.md.tmp.55844.9af5be31d928",
+    "AI Conversations/CORE Web/2026-07-09 Generic MetaDataTable Component Executable Plan.md.tmp.52856.329d7404d221"
+  ]
+}

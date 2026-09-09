@@ -1,0 +1,24 @@
+{
+  "items": [
+    {
+      "type": "file",
+      "ctime": 1779940199852,
+      "path": "Templates/Logic Analysis.md"
+    },
+    {
+      "type": "file",
+      "ctime": 1779940604157,
+      "path": "Templates/🐛 Debug Log — {{title}}.md"
+    },
+    {
+      "type": "file",
+      "ctime": 1779940620694,
+      "path": "Templates/🔍 Logic Analysis — {{title}}.md"
+    },
+    {
+      "type": "file",
+      "ctime": 1779940740301,
+      "path": "Templates/📋 Task Plan — {{title}}.md"
+    }
+  ]
+}
