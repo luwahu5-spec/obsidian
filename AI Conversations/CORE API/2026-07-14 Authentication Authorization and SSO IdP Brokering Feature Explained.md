@@ -1,6 +1,6 @@
 ---
 date: 2026-07-14
-updated: 2026-08-31
+updated: 2026-09-09
 source: Claude Code
 project: both
 tags: [domain-knowledge, auth, keycloak, oidc, sso, idp-brokering, site-authorization, user-management]
@@ -49,7 +49,7 @@ Keycloak = identity broker; CORE talks only to Keycloak; token still issued by t
 → Items 2–4 are the **customer onboarding checklist**: tenant ID + client ID/secret from them, redirect URI from us.
    - **The tenant ID is NOT a secret** — derive it yourself from the customer's email domain via `https://login.microsoftonline.com/<domain>/v2.0/.well-known/openid-configuration` (the `issuer` field carries the GUID), then confirm it back to them. Removes transcription errors (a mistyped GUID locks out every user with a confusing tid mismatch) and removes a trust step. Ask only for the **domain(s)**, which routing needs anyway.
    - Only the **client secret** needs a secure channel (never email) — and only in the per-customer model; a shared multi-tenant app takes no secret from the customer at all.
-   - Several domains → one tenant is normal; several tenants per customer (post-acquisition) is why `CustomerIdentityProvider` is a separate table — multiple rows, no schema change. Also collect **named identity-admin contacts** (needed for the re-bind procedure). The whole exchange fits FMI's existing intake (§5.1 + Appendix A questionnaire).
+   - **Superseded 2026-09-09:** the domain-collection/`CustomerIdentityProvider`-table plan below is replaced by three columns directly on `Customer` (`IdpAlias`, `TenantId`, `SsoEnabled`) — routing resolves by the user's own `AuthenticationMethod`/`CustomerId`, never by email domain, so a domains table was never actually load-bearing. One tenant per customer is the common case; if a customer ever needs two (post-acquisition), extract into a child table then. Also collect **named identity-admin contacts** (needed for support escalation). The whole exchange fits FMI's existing intake (§5.1 + Appendix A questionnaire). See [[2026-08-27 SSO Enterprise Auth Ticket Breakdown]] for the current data model.
 
 ### Step 2 — Keycloak provider
 1. **Add provider → OpenID Connect v1.0** — never the built-in "Microsoft" social provider (consumer endpoints; single-tenant apps fail with `unauthorized_client: not enabled for consumers`).
@@ -63,10 +63,9 @@ Keycloak = identity broker; CORE talks only to Keycloak; token still issued by t
    1. Entra issues the ID token: `tid` = tenant GUID, `oid` = user's object id. **Both are stamped by Microsoft and cannot be set by a tenant admin** (unlike `email`/`mail`, where only the UPN domain is verified).
    2. **IdP Mappers** (provider → Mappers → Add), type **Attribute Importer**, **Sync mode override = Force**: `tid`→`entra_tid`, `oid`→`entra_oid`. Force matters because plain Import only fires for broker-CREATED users — ours are pre-created and *linked*, so Import may never apply; Force also re-imports on every login.
    3. **User Attribute protocol mappers** on the `web` dedicated client scope (add to access token) — same mechanism as `site_id`.
-   4. CORE reads `entra_tid` / `entra_oid` from the bearer token.
-   5. CORE compares them to the values stored on the user at pre-creation → allow, or reject + audit.
-   **`ExpectedTid` always comes from customer configuration at user creation — never trust-on-first-use.** TOFU is acceptable for `oid` only (it guards email recycling *within* an already-verified tenant). This distinction becomes critical in any shared multi-tenant setup, where `tid` is the sole customer identifier ([[2026-08-27 SSO Enterprise Auth Ticket Breakdown]] T10). Enforce for SSO-type users only — local logins carry no such claims. KC linking itself stays email-based; the tid/oid check is a CORE-side second factor after linking. `oid` doubles as the future SCIM `externalId`.
-9. **Hide on login page** (Advanced settings): removes the provider's button WITHOUT disabling it — `kc_idp_hint` still routes to it. With identity-first routing in CORE ([[2026-08-27 SSO Enterprise Auth Ticket Breakdown]] T10) every customer provider gets this On, so the login page never grows a button per customer and local users see a password-only form. No `login.ftl`/theme edit needed. Verify routing BEFORE hiding, or SSO users have no way in; users hitting the Keycloak URL directly then see only the password form.
+   4. CORE reads `entra_tid` / `entra_oid` from the bearer token and stores them as `ExpectedTid`/`ExpectedOid` on the user record.
+   **Design decision 2026-09-09 — NOT enforced at login.** Originally planned as a CORE-side runtime comparison (reject on mismatch), this was dropped: each customer's Keycloak provider is already bound to that customer's tenant by its own tenant-specific discovery URL, and the link-or-reject first-login flow (Step 3) already requires the user to pre-exist — so the tenant is guaranteed structurally before any CORE code runs. A redundant runtime check would add a failure mode (a wrongly-populated `ExpectedTid` blocking a legitimate user) without adding protection. The columns are captured and kept in the schema, reserved for future provisioning work (`oid` doubles as the future SCIM `externalId`) — see [[2026-08-27 SSO Enterprise Auth Ticket Breakdown]].
+9. **Hide on login page** (Advanced settings): removes the provider's button WITHOUT disabling it — `kc_idp_hint` still routes to it. With identity-first routing in CORE ([[2026-08-27 SSO Enterprise Auth Ticket Breakdown]] ticket 3.1–3.3) every customer provider gets this On, so the login page never grows a button per customer and local users see a password-only form. No `login.ftl`/theme edit needed. Verify routing BEFORE hiding, or SSO users have no way in; users hitting the Keycloak URL directly then see only the password form.
 10. Google variant: built-in Google social provider is fine (`/broker/google/endpoint`, same Trust Email + flow settings). Note: Google's test-user list is testing-mode-only — once published, ANY Google account authenticates; the gate is always Step 3.
 
 ### Step 3 — custom first-login flow (link-or-reject; the access gate)
@@ -78,6 +77,21 @@ Two gates: the IdP answers "who is this?"; this flow answers "are they allowed i
 4. Attach as First login flow on EVERY SSO provider; delete orphans from earlier logins.
 
 Rejection message key `federatedIdentityUnavailableUser` ("User … does not exist…"); reword via custom login theme (`themes/<name>/login/messages/messages_en.properties`, `parent=keycloak`) — **our KC is ECS/ECR-deployed (IP-type ALB targets, no server to hand-edit): theme changes = image rebuild**, same work item as Hexagon branding (PRD FR-A 17). Matching email → silent link, KC GUID preserved, `KcUserMapping` stays valid.
+
+### Step 3b — custom Reset Credentials flow (G2: blocks self-service password reset for SSO users)
+**Built and verified 2026-09-09** in `corelocal`. Removing an SSO user's password credential (G1) is not enough on its own — Keycloak's password-reset page is reachable by direct URL regardless of routing, and without this step an SSO user could use "Forgot your password?" to give themselves a working local password, bypassing their company's MFA/conditional access entirely.
+
+1. **Duplicate the built-in flow** — `Authentication → Flows → reset credentials` (marked `Built-in`) → kebab menu (⋮) → **Duplicate** → name it e.g. `reset credentials (SSO blocked)`. Don't edit the built-in directly.
+2. **Add sub-flow** → name it e.g. `Block SSO Users` → Requirement **Conditional**.
+3. Inside that sub-flow, add two steps:
+   - `Condition - user attribute` → **Required** → configure: Alias = any label (e.g. `sso-user`, purely cosmetic, unrelated to the IdP alias), Attribute name `auth_method`, Expected attribute value `sso`, Negate output **Off**.
+   - `Deny Access` → **Required**.
+4. **Position matters** — the sub-flow must sit directly below `Choose User` and above `Send Reset Email`, at the same indentation level as `Choose User` (not nested inside the `Reset - Conditional OTP` sub-flow). Use the table view (not the diagram view) to confirm indentation and order reliably. If it fires after `Send Reset Email`, the reset email has already been sent by the time access is denied.
+5. **Bind the flow**: kebab menu on the new flow → **Bind flow** → **Reset credentials flow**. Confirm via the Flows list **"Used by"** column — it should now show your copy, not the built-in.
+
+**Test:** tag a user with attribute `auth_method=sso` (this is what ticket 2.1 sets automatically at creation) → "Forgot your password?" → denied immediately, **no email sent**. A user without the attribute gets the normal reset email, unaffected.
+
+**Version note:** `Condition - user attribute` was present and usable on this KC 20 instance — worth reconfirming when repeating this in staging/production (ticket 4.4), since availability isn't guaranteed across every KC 20.x build.
 
 ### Step 4 — verify & debug (no server-log access)
 - Test matrix: matching pre-created user → straight in (link visible under *Identity provider links*); unknown account → rejected, no user created.
@@ -113,7 +127,9 @@ Force SSO-only for a customer: create their users with no password credential (n
 - 2026-07-14 — stop auto-creation, reject unknown SSO users → Step 3 flow; verified with Google.
 - 2026-07-14 — test Entra without being org admin → own free tenant (Step 1); Entra verified end-to-end.
 - 2026-07-17 — customize rejection message + Verify essential claim → theme-in-ECR-image + Step 2.7; tid/oid mappers designed & verified (Step 2.8); per-user email-claim trap confirmed twice (Step 4).
-- 2026-08-31 — "Multi-tenant test shows 'Approval required / KeyCloak unverified' — normal? How do we stop any tenant's user getting in just because a matching email exists in CORE? How does tid flow?" → "Approval required" = enterprise tenants disable user consent (admin consent needed per customer); "unverified" = no verified publisher (MPN/Partner Center linkage, a Hexagon corporate task), which many tenants block outright. Email is NOT proof of customer — a tenant admin can set `mail` freely — so the `tid` check is mandatory; 5-step flow now in Step 2.8 with the never-TOFU rule for `ExpectedTid`. Consent friction previews a customer security review — the practical case for per-customer registrations ([[2026-08-27 SSO Enterprise Auth Ticket Breakdown]] T10).
+- 2026-08-31 — "Multi-tenant test shows 'Approval required / KeyCloak unverified' — normal? How do we stop any tenant's user getting in just because a matching email exists in CORE? How does tid flow?" → "Approval required" = enterprise tenants disable user consent (admin consent needed per customer); "unverified" = no verified publisher (MPN/Partner Center linkage, a Hexagon corporate task), which many tenants block outright. Consent friction previews a customer security review — the practical case for per-customer registrations. (This answer was reached before the team settled on per-customer registrations exclusively; see the 2026-09-09 entry below for the final call on tid.)
+- 2026-09-09 — team decided the per-customer provider binding alone is sufficient proof of tenant (each provider only accepts its own tenant's tokens, and the user must pre-exist) — the CORE-side `tid` runtime check from the answer above is dropped as redundant. `ExpectedTid`/`ExpectedOid` remain captured and stored, reserved for future provisioning, not enforced. See [[2026-08-27 SSO Enterprise Auth Ticket Breakdown]].
+- 2026-09-09 — "Add the reset-credentials customization step" → Step 3b added: duplicate the built-in Reset Credentials flow, add a Conditional sub-flow with `Condition - user attribute` (auth_method=sso) + Deny Access, positioned between Choose User and Send Reset Email, bind it as the realm's Reset credentials flow. Built and verified working in corelocal.
 
 ## Related
 - [[2026-07-14 PRD Enterprise Authentication User Management Analysis]] — the Freeport/Entra PRD mapped onto this architecture
