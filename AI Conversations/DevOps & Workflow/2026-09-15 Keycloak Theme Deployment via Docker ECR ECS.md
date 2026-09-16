@@ -268,5 +268,6 @@ COPY themes/Hexagon-New /opt/keycloak/themes/Hexagon-New
 That makes each change a pull request and puts the theme under version control. Worth raising with whoever owns the Keycloak image before settling into the manual workflow permanently.
 
 ## Related
+- [[2026-09-16 Confluence — How to Update the Keycloak Login Theme]] — the team-facing version of this runbook
 - [[2026-07-14 Authentication Authorization and SSO IdP Brokering Feature Explained]] — the realm configuration this theme sits on
 - [[2026-08-27 SSO Enterprise Auth Ticket Breakdown]] — ticket 4.5 is the theme work, 4.2 the reset-credentials flow
