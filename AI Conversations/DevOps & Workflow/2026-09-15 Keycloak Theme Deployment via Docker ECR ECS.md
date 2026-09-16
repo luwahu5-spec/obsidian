@@ -97,7 +97,11 @@ docker run --name kc-theme -p 8081:8080 -e KEYCLOAK_ADMIN=admin -e KEYCLOAK_ADMI
 
 The three `--spi-theme-*` flags disable theme caching — without them every edit needs a restart; with them it is edit, save, refresh.
 
-Then `localhost:8081` → admin/admin → **Realm settings → Themes → Login theme** → pick either theme.
+**Now select the theme — mounting only makes it available, it does not apply it.** Skip this and the login page renders the stock Keycloak theme (dark background, blue button) and it looks like the mount failed.
+
+`localhost:8081` → admin/admin → **Realm settings → Themes → Login theme** → pick the theme → **Save**.
+
+If the theme is missing from the dropdown, the container was created before the folder existed — mounts are fixed at creation, so `docker rm -f kc-theme` and re-run. To confirm the mount itself: `docker exec kc-theme ls /opt/keycloak/themes` (the built-in `base`/`keycloak` themes live inside a jar and will not be listed).
 
 View the login page in an **incognito window** (the normal one is signed in as admin and skips it):
 

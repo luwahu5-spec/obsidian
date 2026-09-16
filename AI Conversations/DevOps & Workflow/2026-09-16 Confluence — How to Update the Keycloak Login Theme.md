@@ -101,10 +101,12 @@ docker run --name kc-theme -p 8081:8080 -e KEYCLOAK_ADMIN=admin -e KEYCLOAK_ADMI
 
 The three `--spi-theme-*` flags disable theme caching. Without them every edit needs a container restart; with them it is edit → save → refresh.
 
-Then:
+### Select the theme — do not skip this
+
+Mounting a theme only makes it **available**. Until a realm selects it, the login page renders the stock Keycloak theme (dark background, blue button) and it looks as though the mount failed. This is the same behaviour as deploying to ECS, where a new theme is invisible until a realm picks it up.
 
 1. Open `http://localhost:8081` and sign in as `admin` / `admin`
-2. **Realm settings → Themes → Login theme → `Hexagon-New` → Save**
+2. **Realm settings → Themes** tab **→ Login theme → `Hexagon-New` → Save**
 3. Open the login page in an **incognito window** — your normal window is signed in as admin and skips it:
 
 ```
@@ -235,6 +237,8 @@ Then force a new deployment. Without the label from Step 3 you would have to fin
 | *"configured datasource `<default>` not found"* | An **empty** env var is not an unset one. `-e KC_DB_URL=` makes Keycloak treat `""` as a real datasource. Supply a valid value or omit the variable entirely |
 | Liquibase error: *Syntax error in SQL statement … `REPLACE(VALUE, …)`* | The production image is built for PostgreSQL and cannot migrate its schema onto local H2 (`VALUE` is a reserved word in H2 2.x). Use `quay.io/keycloak/keycloak:20.0.1` locally |
 | `docker cp` succeeded but the image lacks the files | The commit silently did not run. Check `docker diff kc-build` (should list `A /opt/keycloak/themes/Hexagon-New`) and `docker images` — a successful commit produces an image created *seconds* ago. If `:latest` still shows months old, re-run the commit |
+| Locally you still see the stock Keycloak page (dark background) | The realm has not been switched to the theme. Mounting only makes a theme available — **Realm settings → Themes → Login theme** |
+| Theme missing from the local dropdown | The container was created before the theme folder existed. Mounts are fixed at creation: `docker rm -f kc-theme` and re-run. Confirm the mount with `docker exec kc-theme ls /opt/keycloak/themes` — the built-in `base`/`keycloak` themes live inside a jar and are never listed |
 | Theme not in the admin console dropdown after pushing | Tasks have not cycled. The dropdown lists the **running** container's filesystem. Force a new deployment |
 | `/opt/keycloak/...` becomes `C:/Users/.../opt/keycloak/...` | Git Bash rewrites Unix-style paths on Windows. Use **PowerShell** for Docker commands, or prefix with `MSYS_NO_PATHCONV=1` |
 | `docker cp` rejects the argument | No spaces around the colon: `container:/path`, not `container : /path` |
