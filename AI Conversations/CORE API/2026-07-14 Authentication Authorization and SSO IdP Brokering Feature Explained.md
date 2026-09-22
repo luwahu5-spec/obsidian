@@ -69,14 +69,38 @@ Keycloak = identity broker; CORE talks only to Keycloak; token still issued by t
 10. Google variant: built-in Google social provider is fine (`/broker/google/endpoint`, same Trust Email + flow settings). Note: Google's test-user list is testing-mode-only — once published, ANY Google account authenticates; the gate is always Step 3.
 
 ### Step 3 — custom first-login flow (link-or-reject; the access gate)
-Two gates: the IdP answers "who is this?"; this flow answers "are they allowed in?" (a KC user with the same email must pre-exist). Without it the default flow auto-creates orphans.
+Three gates now apply: the IdP answers "who is this?"; the first two executions require the Keycloak user to pre-exist; and the conditional sub-flow requires that existing user to have been provisioned by CORE specifically for SSO (`auth_method=sso`). Without this flow, Keycloak's default first-broker-login flow can auto-create orphan users. Without the attribute gate, a pre-existing local user with the same email could be silently linked to an external IdP.
 
 1. Correct realm → `Authentication → Flows → Create flow` — e.g. `sso first login (no auto-create)`, **Basic flow**.
-2. `Add step` → **Detect existing broker user** → **Required** (rejects unknown emails).
-3. `Add step` → **Automatically set existing user** → **Required**, below it (silent link). Two Required rows, nothing else — any row on Alternative/Disabled silently admits everyone.
-4. Attach as First login flow on EVERY SSO provider; delete orphans from earlier logins.
+2. `Add step` → **Detect existing broker user** → **Required** (rejects an external identity when no matching Keycloak user exists).
+3. `Add step` → **Automatically set existing user** → **Required**, directly below it (selects the matching existing user for silent linking). This must run before the attribute condition because Keycloak must first place the existing user into the authentication context.
+4. At the root of the flow, `Add sub-flow` → name it e.g. **Reject users not marked for SSO** → set its Requirement to **Conditional**. Place it below **Automatically set existing user**.
+5. From the `+` menu on that sub-flow, choose **Add condition** (not **Add step**) → **Condition - user attribute** → **Required**, then configure:
+   - Attribute name: `auth_method`
+   - Expected attribute value: `sso`
+   - Negate output: **On**
+   - Include group attributes: **Off**
+6. From the same sub-flow's `+` menu, choose **Add step** → **Deny Access** → **Required**. Configure the error message, for example: `This CORE account is not enabled for enterprise SSO.`
+7. Attach this flow as **First login flow** on EVERY SSO provider; delete any orphan users created by earlier use of the default flow.
 
-Rejection message key `federatedIdentityUnavailableUser` ("User … does not exist…"); reword via custom login theme (`themes/<name>/login/messages/messages_en.properties`, `parent=keycloak`) — **our KC is ECS/ECR-deployed (IP-type ALB targets, no server to hand-edit): theme changes = image rebuild**, same work item as Hexagon branding (PRD FR-A 17). Matching email → silent link, KC GUID preserved, `KcUserMapping` stays valid.
+The final tree must be:
+
+```text
+CORE SSO First Broker Login
+├── Detect Existing Broker User             REQUIRED
+├── Automatically Set Existing User         REQUIRED
+└── Reject users not marked for SSO         CONDITIONAL
+    ├── Condition - User Attribute           REQUIRED
+    │   ├── Attribute name: auth_method
+    │   ├── Expected value: sso
+    │   ├── Negate output: On
+    │   └── Include group attributes: Off
+    └── Deny Access                          REQUIRED
+```
+
+The negation is intentional: when the selected user has exactly `auth_method=sso`, the condition is false, so the rejection sub-flow is skipped and linking continues. When the attribute is absent or has another value, the condition is true and **Deny Access** stops the login before a federated identity link is created. In the Admin Console, conditional authenticators appear under **Add condition** only after a **Conditional** sub-flow has been created; they do not appear in the ordinary **Add step** list.
+
+Unknown users are rejected by **Detect existing broker user** (message key `federatedIdentityUnavailableUser`). Existing users not marked for SSO are rejected by the configured **Deny Access** message. Theme-level rewording uses `themes/<name>/login/messages/messages_en.properties` with `parent=keycloak` — **our KC is ECS/ECR-deployed (IP-type ALB targets, no server to hand-edit): theme changes = image rebuild**, same work item as Hexagon branding (PRD FR-A 17). An eligible matching SSO user is linked silently; its KC GUID is preserved and `KcUserMapping` stays valid.
 
 ### Step 3b — custom Reset Credentials flow (G2: blocks self-service password reset for SSO users)
 **Built and verified 2026-09-09** in `corelocal`. Removing an SSO user's password credential (G1) is not enough on its own — Keycloak's password-reset page is reachable by direct URL regardless of routing, and without this step an SSO user could use "Forgot your password?" to give themselves a working local password, bypassing their company's MFA/conditional access entirely.
