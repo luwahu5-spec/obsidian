@@ -1,0 +1,380 @@
+diff --git a/Minnovare.Core.KcUtils/Exceptions.cs b/Minnovare.Core.KcUtils/Exceptions.cs
+index e4c28fd..2768e18 100644
+--- a/Minnovare.Core.KcUtils/Exceptions.cs
++++ b/Minnovare.Core.KcUtils/Exceptions.cs
+@@ -12,6 +12,13 @@ public class KcClientException : Exception
+         Reason = reason;
+     }
+ 
++    protected KcClientException(HttpStatusCode httpStatusCode, string reason, Exception? innerException)
++        : base(null, innerException)
++    {
++        HttpStatusCode = httpStatusCode;
++        Reason = reason;
++    }
++
+     public HttpStatusCode HttpStatusCode { get; }
+     public string Reason { get; }
+ }
+@@ -55,4 +62,33 @@ public class KcPolicyException : KcClientException
+     public string UserName { get; }
+ 
+     public override string Message => $"Request {Request} to Keycloak with username {UserName} failed on retry. Fault reason was {FaultType}.";
++}
++
++/// <summary>
++/// A create-user request reached Keycloak, or may have, but the call did not complete cleanly.
++/// Thrown instead of the underlying failure so the caller can remove the Keycloak identity
++/// during rollback rather than leaving an orphan that blocks every retry with "already exists".
++/// </summary>
++public class KcUserCreationUncertainException : KcClientException
++{
++    public KcUserCreationUncertainException(string userName, Guid? createdUserId, Exception innerException)
++        : base((innerException as KcClientException)?.HttpStatusCode ?? HttpStatusCode.GatewayTimeout,
++               "Keycloak user creation did not complete cleanly.",
++               innerException)
++    {
++        UserName = userName;
++        CreatedUserId = createdUserId;
++    }
++
++    public string UserName { get; }
++
++    /// <summary>
++    /// The Keycloak user that was created, when it could be identified. Null means an identity
++    /// may exist in Keycloak but could not be found, so rollback cannot be confirmed.
++    /// </summary>
++    public Guid? CreatedUserId { get; }
++
++    public override string Message => CreatedUserId.HasValue
++        ? $"Keycloak created user {UserName} ({CreatedUserId}) but the request did not complete cleanly."
++        : $"Keycloak may have created user {UserName}, but it could not be identified. Manual reconciliation may be required.";
+ }
+\ No newline at end of file
+diff --git a/Minnovare.Core.KcUtils/KcClient.cs b/Minnovare.Core.KcUtils/KcClient.cs
+index aa4ebde..d3eb8a7 100644
+--- a/Minnovare.Core.KcUtils/KcClient.cs
++++ b/Minnovare.Core.KcUtils/KcClient.cs
+@@ -348,7 +348,17 @@ public class KcClient
+ 
+         _logger.LogTrace("Creating user {0} in KeyCloak", kcUser);
+         var createUserUri = new Uri(_kcServerUri, $"admin/realms/{_kcRealm}/users");
+-        var createUserResult = await tryCallMigrateUser(() => client.PostAsJsonAsync(createUserUri, kcUser));
++        HttpResponseMessage createUserResult;
++        try
++        {
++            createUserResult = await tryCallMigrateUser(() => client.PostAsJsonAsync(createUserUri, kcUser));
++        }
++        catch (KcPolicyException ex)
++        {
++            // No response came back (typically a timeout), but the request may still have been
++            // processed. Find out before the caller rolls back, or the Keycloak user is orphaned.
++            throw await ResolveUncertainCreationAsync(userSearchUri, kcUser.Username ?? string.Empty, ex);
++        }
+ 
+         if (createUserResult.StatusCode != HttpStatusCode.Created)
+         {
+@@ -374,7 +384,12 @@ public class KcClient
+                 _logger.LogError(
+                     "KeyCloak created user {UserName}, but its ID could not be retrieved. Status Code = {StatusCode}. Reason = {Reason}. Manual reconciliation may be required.",
+                     kcUser.Username, getUserResult.StatusCode, lookupFailure);
+-                throw new KcRequestException(getUserResult.StatusCode, lookupFailure, "GetCreatedUser", kcUser.Username ?? string.Empty);
++                // The user exists but cannot be identified, so the caller must not report a
++                // completed rollback.
++                throw new KcUserCreationUncertainException(
++                    kcUser.Username ?? string.Empty,
++                    null,
++                    new KcRequestException(getUserResult.StatusCode, lookupFailure, "GetCreatedUser", kcUser.Username ?? string.Empty));
+             }
+ 
+             matchingUsers = await getUserResult.Content.ReadFromJsonAsync<List<KcUser>>();
+@@ -383,11 +398,14 @@ public class KcClient
+                 _logger.LogError(
+                     "KeyCloak created user {UserName}, but the exact lookup returned {MatchCount} matches. Manual reconciliation may be required.",
+                     kcUser.Username, matchingUsers?.Count ?? 0);
+-                throw new KcRequestException(
+-                    getUserResult.StatusCode,
+-                    $"KeyCloak server reports {matchingUsers?.Count ?? 0} matches for {kcUser.Username}",
+-                    "GetCreatedUser",
+-                    kcUser.Username ?? string.Empty);
++                throw new KcUserCreationUncertainException(
++                    kcUser.Username ?? string.Empty,
++                    null,
++                    new KcRequestException(
++                        getUserResult.StatusCode,
++                        $"KeyCloak server reports {matchingUsers?.Count ?? 0} matches for {kcUser.Username}",
++                        "GetCreatedUser",
++                        kcUser.Username ?? string.Empty));
+             }
+ 
+             createdUserId = matchingUsers![0].Id;
+@@ -420,6 +438,47 @@ public class KcClient
+         return (kcUser.Id, kcUser.Credentials?.FirstOrDefault()?.Value ?? string.Empty);
+     }
+ 
++    /// <summary>
++    /// Works out what happened after a create-user request that got no response. The
++    /// pre-create lookup in <see cref="MigrateUser"/> already proved no user with this username
++    /// existed, so exactly one match now can only be the one this request created.
++    /// </summary>
++    /// <returns>
++    /// The original failure when Keycloak holds no such user (nothing to clean up); otherwise a
++    /// <see cref="KcUserCreationUncertainException"/>, carrying the created ID when it was found.
++    /// </returns>
++    private async Task<Exception> ResolveUncertainCreationAsync(Uri exactUserSearchUri, string userName, Exception cause)
++    {
++        try
++        {
++            var lookup = await TryCall(() => client.GetAsync(exactUserSearchUri), "GetUncertainCreatedUser", userName);
++            if (lookup.StatusCode == HttpStatusCode.OK)
++            {
++                var matches = await lookup.Content.ReadFromJsonAsync<List<KcUser>>();
++                if (matches != null && matches.Count == 0)
++                {
++                    return cause;
++                }
++
++                if (matches?.Count == 1)
++                {
++                    _logger.LogWarning(
++                        "Create request for {UserName} got no response, but Keycloak holds user {UserId}; returning it for rollback.",
++                        userName, matches[0].Id);
++                    return new KcUserCreationUncertainException(userName, matches[0].Id, cause);
++                }
++            }
++        }
++        catch (Exception lookupFailure)
++        {
++            _logger.LogError(lookupFailure,
++                "Could not determine whether Keycloak created user {UserName} after the create request failed.",
++                userName);
++        }
++
++        return new KcUserCreationUncertainException(userName, null, cause);
++    }
++
+     /// <summary>
+     /// Reads the created Keycloak user's identifier from the standard REST Location header.
+     /// Both absolute and relative locations are accepted because reverse proxies can affect the
+diff --git a/Minnovare.Core.WebApi.Tests/ControllerTests/SSOUserTest.cs b/Minnovare.Core.WebApi.Tests/ControllerTests/SSOUserTest.cs
+index 99f3208..5c04853 100644
+--- a/Minnovare.Core.WebApi.Tests/ControllerTests/SSOUserTest.cs
++++ b/Minnovare.Core.WebApi.Tests/ControllerTests/SSOUserTest.cs
+@@ -297,6 +297,50 @@ namespace Minnovare.Core.WebApi.Tests.ControllerTests
+             VerifyNeitherUserWasCreated();
+         }
+ 
++        [Fact]
++        public async Task CreateSiteUserAsync_KeycloakCreatedUserButRequestFailed_RollsBackBothIdentities()
++        {
++            const long siteId = 10;
++            var createdKcId = Guid.NewGuid();
++            ArrangeSite(siteId);
++            ArrangeSsoCustomer();
++            ArrangeSuccessfulSsoCoreCreation();
++            ArrangeUncertainKeycloakCreation(createdKcId);
++            _kcClient.Setup(client => client.DeleteUser(createdKcId)).Returns(Task.CompletedTask);
++
++            var result = await CreateController(isAdministrator: true)
++                .CreateSiteUserAsync(siteId, CreateSsoInput());
++
++            var response = Assert.IsType<BadRequestObjectResult>(result);
++            var error = Assert.IsType<UserCreationError>(response.Value);
++            Assert.Equal(UserCreationErrorReason.UserSync, error.Reason);
++            Assert.DoesNotContain("Manual reconciliation", error.Description, StringComparison.OrdinalIgnoreCase);
++            // The Keycloak identity must go too, or every retry fails with "already exists".
++            _kcClient.Verify(client => client.DeleteUser(createdKcId), Times.Once);
++            _userManager.Verify(manager => manager.DeleteAsync(It.IsAny<MinnovareUser>()), Times.Once);
++        }
++
++        [Fact]
++        public async Task CreateSiteUserAsync_KeycloakUserMayExistButUnidentified_ReportsManualReconciliation()
++        {
++            const long siteId = 10;
++            ArrangeSite(siteId);
++            ArrangeSsoCustomer();
++            ArrangeSuccessfulSsoCoreCreation();
++            ArrangeUncertainKeycloakCreation(createdKcId: null);
++
++            var result = await CreateController(isAdministrator: true)
++                .CreateSiteUserAsync(siteId, CreateSsoInput());
++
++            var response = Assert.IsType<BadRequestObjectResult>(result);
++            var error = Assert.IsType<UserCreationError>(response.Value);
++            // CORE is still rolled back, but the response must not claim a clean rollback while
++            // an unidentified Keycloak identity may remain.
++            Assert.Contains("Manual reconciliation", error.Description, StringComparison.OrdinalIgnoreCase);
++            _kcClient.Verify(client => client.DeleteUser(It.IsAny<Guid>()), Times.Never);
++            _userManager.Verify(manager => manager.DeleteAsync(It.IsAny<MinnovareUser>()), Times.Once);
++        }
++
+         [Theory]
+         [InlineData(true, true, "test-customer", true)]
+         [InlineData(false, true, "test-customer", false)]
+@@ -567,6 +611,21 @@ namespace Minnovare.Core.WebApi.Tests.ControllerTests
+                 .ReturnsAsync((kcId, Password));
+         }
+ 
++        private void ArrangeUncertainKeycloakCreation(Guid? createdKcId)
++        {
++            _kcClient
++                .Setup(client => client.MigrateUser(
++                    It.IsAny<MinnovareUser>(),
++                    It.IsAny<List<IdentityUserClaim<string>>>(),
++                    It.IsAny<bool>(),
++                    It.IsAny<string>(),
++                    It.IsAny<bool>(),
++                    It.IsAny<bool>(),
++                    It.IsAny<bool>()))
++                .ThrowsAsync(new KcUserCreationUncertainException(
++                    "sso.user@example.com", createdKcId, new TimeoutException()));
++        }
++
+         private void ArrangeExistingUser(MinnovareUser user)
+         {
+             var mapping = new KcUserMapping
+diff --git a/Minnovare.Core.WebApi.Tests/Services/KcClientTests.cs b/Minnovare.Core.WebApi.Tests/Services/KcClientTests.cs
+index 7241028..5bc69f7 100644
+--- a/Minnovare.Core.WebApi.Tests/Services/KcClientTests.cs
++++ b/Minnovare.Core.WebApi.Tests/Services/KcClientTests.cs
+@@ -1,4 +1,4 @@
+-﻿using Amazon.SecretsManager;
++using Amazon.SecretsManager;
+ using Amazon.SecretsManager.Model;
+ using Microsoft.AspNetCore.Identity;
+ using Microsoft.Extensions.Configuration;
+@@ -51,6 +51,80 @@ namespace Minnovare.Core.WebApi.Tests.Services
+                 It.IsAny<GetSecretValueRequest>(), It.IsAny<CancellationToken>()), Times.Exactly(2));
+         }
+ 
++        [Fact]
++        public async Task MigrateUser_CreateTimesOutButUserWasCreated_ThrowsUncertainWithCreatedId()
++        {
++            var createdId = Guid.NewGuid();
++            var handler = new SequenceHttpMessageHandler(
++                new HttpResponseMessage(HttpStatusCode.OK) { Content = JsonContent.Create(new List<KcUser>()) },
++                null,
++                new HttpResponseMessage(HttpStatusCode.OK)
++                {
++                    Content = JsonContent.Create(new List<KcUser> { new KcUser { Id = createdId } })
++                });
++            var originalClient = KcClient.client;
++
++            try
++            {
++                KcClient.client = new HttpClient(handler);
++                var client = CreateAuthenticatedClient();
++
++                var failure = await Assert.ThrowsAsync<KcUserCreationUncertainException>(
++                    () => client.MigrateUser(CreateSsoMigrationUser(), new List<IdentityUserClaim<string>>(),
++                        isAdmin: false, password: null, temporary: false, emailVerified: true, isSsoUser: true));
++
++                Assert.Equal(createdId, failure.CreatedUserId);
++                Assert.Equal(3, handler.RequestCount);
++                Assert.Equal(HttpMethod.Get, handler.Requests[2].Method);
++            }
++            finally
++            {
++                KcClient.client.Dispose();
++                KcClient.client = originalClient;
++            }
++        }
++
++        [Fact]
++        public async Task MigrateUser_CreateTimesOutAndNoUserExists_ThrowsOriginalFailure()
++        {
++            var handler = new SequenceHttpMessageHandler(
++                new HttpResponseMessage(HttpStatusCode.OK) { Content = JsonContent.Create(new List<KcUser>()) },
++                null,
++                new HttpResponseMessage(HttpStatusCode.OK) { Content = JsonContent.Create(new List<KcUser>()) });
++            var originalClient = KcClient.client;
++
++            try
++            {
++                KcClient.client = new HttpClient(handler);
++                var client = CreateAuthenticatedClient();
++
++                // Nothing was created, so there is nothing for the caller to clean up and the
++                // plain failure must come through unchanged.
++                var failure = await Assert.ThrowsAsync<KcPolicyException>(
++                    () => client.MigrateUser(CreateSsoMigrationUser(), new List<IdentityUserClaim<string>>(),
++                        isAdmin: false, password: null, temporary: false, emailVerified: true, isSsoUser: true));
++
++                Assert.Equal(3, handler.RequestCount);
++            }
++            finally
++            {
++                KcClient.client.Dispose();
++                KcClient.client = originalClient;
++            }
++        }
++
++        private static MinnovareUser CreateSsoMigrationUser()
++        {
++            return new MinnovareUser
++            {
++                Id = Guid.NewGuid().ToString(),
++                UserName = "sso.user@example.com",
++                Email = "sso.user@example.com",
++                GivenName = "SSO",
++                FamilyName = "User"
++            };
++        }
++
+         [Fact]
+         public async Task MigrateUser_CreatedResponseUsesLocationIdWithoutFollowUpLookup()
+         {
+@@ -241,7 +315,12 @@ namespace Minnovare.Core.WebApi.Tests.Services
+                     throw new InvalidOperationException("The test issued more Keycloak requests than expected.");
+                 }
+ 
+-                return Task.FromResult(_responses.Dequeue());
++                // A null entry stands for a request that got no response, which is how
++                // HttpClient surfaces a timeout.
++                var response = _responses.Dequeue();
++                return response == null
++                    ? throw new TaskCanceledException("Simulated Keycloak timeout.")
++                    : Task.FromResult(response);
+             }
+         }
+     }
+diff --git a/Minnovare.Core.WebApi/Controllers/UsersController.cs b/Minnovare.Core.WebApi/Controllers/UsersController.cs
+index 1d2c5ed..091a017 100644
+--- a/Minnovare.Core.WebApi/Controllers/UsersController.cs
++++ b/Minnovare.Core.WebApi/Controllers/UsersController.cs
+@@ -442,7 +442,7 @@ namespace Minnovare.Core.WebApi.Controllers
+             {
+                 _logger.LogError(ex, "Failed to synchronise to KeyCloak for CORE user {UserId}.", user.Id);
+ 
+-                var rollbackCompleted = await CompensateFailedUserCreationAsync(user);
++                var rollbackCompleted = await CompensateAfterKeycloakFailureAsync(user, ex);
+                 return BadRequest(new UserCreationError(UserCreationErrorReason.UserSync,
+                     rollbackCompleted
+                         ? "User could not be synchronised to KeyCloak. The new CORE user was rolled back."
+@@ -621,6 +621,17 @@ namespace Minnovare.Core.WebApi.Controllers
+             return rollbackCompleted;
+         }
+ 
++        /// <summary>
++        /// Rolls back after KeyCloak Sync User failed. 
++        /// </summary>
++        private async Task<bool> CompensateAfterKeycloakFailureAsync(MinnovareUser user, Exception keycloakFailure)
++        {
++            var uncertain = keycloakFailure as KcUserCreationUncertainException;
++            var rollbackCompleted = await CompensateFailedUserCreationAsync(user, uncertain?.CreatedUserId);
++
++            return rollbackCompleted && (uncertain == null || uncertain.CreatedUserId.HasValue);
++        }
++
+         /// <summary>
+         /// Completes user creation by persisting the CORE-to-Keycloak mapping. If persistence
+         /// fails, both newly created identities are removed on a best-effort basis.
+@@ -759,7 +770,7 @@ namespace Minnovare.Core.WebApi.Controllers
+             catch (Exception ex) when (IsKeyCloakFailure(ex))
+             {
+                 _logger.LogError(ex, "Failed to provision KeyCloak identity for CORE user {UserId} on site {SiteId}.", user.Id, siteId);
+-                var rollbackCompleted = await CompensateFailedUserCreationAsync(user);
++                var rollbackCompleted = await CompensateAfterKeycloakFailureAsync(user, ex);
+                 return BadRequest(new UserCreationError(UserCreationErrorReason.UserSync,
+                     rollbackCompleted
+                         ? "User could not be synchronised to KeyCloak. The new CORE user was rolled back."

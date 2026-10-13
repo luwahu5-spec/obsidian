@@ -1,6 +1,6 @@
 ---
 date: 2026-08-27
-updated: 2026-09-09
+updated: 2026-10-05
 source: Claude Code
 project: core-web-api (Layers 1–2), core-web (Layer 3), infra (Layer 4)
 tags: [planning, tickets, sso, enterprise-auth, keycloak, entra-id]
@@ -12,19 +12,23 @@ tags: [planning, tickets, sso, enterprise-auth, keycloak, entra-id]
 >
 > **Design decided 2026-09-01, finalized 2026-09-09:** per-customer IdP entries + identity-first login. Existing users stay local forever; SSO users are created as SSO — no conversion either direction. Rationale and rejected alternatives: [[2026-07-14 PRD Enterprise Authentication User Management Analysis]]. Verified Keycloak config: [[2026-07-14 Authentication Authorization and SSO IdP Brokering Feature Explained]].
 
-## The three enforcement gates that are code (G4 is not)
-Together with G4 below, these make one requirement true: *an SSO user shall not create, reset or use local credentials.*
+## The four enforcement gates
+G1–G3 make one requirement true: *an SSO user shall not create, reset or use local credentials.* G4 makes sure the right person reaches the right account.
 
 | Gate | What it stops | Mechanism | Ticket |
 |---|---|---|---|
 | **G1** | Password login succeeding at all | The Keycloak user has **no password credential** — nothing to guess or leak | 2.1 |
 | **G2** | The user *creating* a password via "Forgot your password?" | Conditional **Deny Access** in Keycloak's **Reset Credentials** flow when `auth_method=sso` | 4.2 |
 | **G3** | An admin creating one from inside CORE | Password fields hidden/disabled; change-password and confirm-email refuse for SSO users; email locked on edit | 2.1, 3.6 |
-| **G4** | The wrong tenant or wrong person getting in | **Structural, not a runtime check** — each Keycloak provider is bound to one customer's tenant by its own configuration, and the user must already exist in CORE. No code ticket. | — |
+| **G4** | The wrong tenant or wrong person getting in | **Layer A** (Keycloak): first-login flow denies linking to any account without `auth_method=sso`. **Layer B** (API): `SsoTenantEnforcementMiddleware` refuses any request whose token tenant (`entra_tid`) doesn't match the account | 4.x config + API |
 
 **G2 is built and verified** (2026-09-09) against the `corelocal` realm: a user tagged `auth_method=sso` is denied at "Forgot your password?" with no email sent; a normal user's reset is unaffected. Ticket 4.2 is repeating this configuration in staging and production, not building it from scratch.
 
-**G4 was originally a runtime `tid` comparison in code — removed by design decision.** Each customer's Keycloak provider only accepts tokens from that customer's own tenant (its discovery URL is tenant-specific), and the link-or-reject first-login flow requires the user to pre-exist in CORE. Both guarantees exist before any CORE code runs. A second, redundant comparison in CORE would add a failure mode (e.g. a wrongly-populated `ExpectedTid` blocking a legitimate user) without adding protection. The `ExpectedTid`/`ExpectedOid`/`OidCapturedAtUtc` columns remain in the schema, reserved for future provisioning work (SCIM `externalId`), but nothing populates or checks them in this phase.
+**G4 history:** on 2026-09-09 the runtime `tid` check was dropped as "structural", on the reasoning that each provider only accepts its own tenant and the user must pre-exist. **A test on 2026-10-01 disproved that:** Keycloak links an external sign-in to an existing account **by email alone**, and an Entra admin can set Contact Email to any address. An Entra user from the test tenant landed in a **local** CORE account with no password asked. So G4 is now enforced in two layers:
+- **Layer A, Keycloak config (built and verified):** a conditional sub-flow after *Automatically set existing user* denies the link when the matched account isn't `auth_method=sso`. Blocks takeover of local accounts, including Administrators. Recipe: SSO feature note, Step 3.
+- **Layer B, API code (built):** `SsoTenantEnforcementMiddleware` runs on every signed-in request, before any controller (and so before the `oid` capture in `GetUserAsync`). SSO account → token `entra_tid` must equal `ExpectedTid`; missing → refused (fail closed). Local account carrying `entra_tid` → refused. 5-minute cache per user. Refusals log the user and both tenant IDs.
+- **Rollout prerequisite:** every realm needs the tid mappers (IdP Attribute Importer, sync mode Force, plus the `web` client protocol mapper), the Layer A flow, and every customer provider bound to that flow. Otherwise SSO users get 403. Configured in all realms as of 2026-10-05.
+- **Known remaining gap:** an Entra admin at customer A pointing one A user's Contact Email at another A user's address passes both layers (same tenant, SSO account). Closing it means also requiring token `entra_oid` = `ExpectedOid` once captured: a few lines in the same middleware, not yet decided.
 
 ## Dependency spine
 ```
@@ -141,9 +145,27 @@ Each ticket delivers one working capability end to end.
 
 ---
 
+## Next sprint
+
+### Sign-in must be the person whose email was typed (live-session reuse)
+**Problem:** `/Signin` checks the typed email *exists* in CORE, but nothing checks that the person who actually ends up signed in *is* that email. If the browser still holds a live Keycloak or Microsoft session for person A, typing person B's (valid) email routes to Keycloak, which silently signs in **A**, and the user lands in CORE as A. Likely on shared site-office PCs. Reproduce: while signed in as A, open `/Signin` in the same browser and type another existing user's email → you arrive as A.
+
+**Fix (decided 2026-10-05):**
+1. **core-web check (~30 lines, `Startup.cs`).** In the OIDC `OnTokenValidated` event (after the code exchange, before CORE's cookie is created), compare the token's `email` claim with the typed email, which `/Signin` already carries in the sign-in properties (`SigninModel.LoginHintKey`). Ignore case. **Match** → continue. **Mismatch** → don't create the CORE session; end the Keycloak session (RP-initiated logout) so a retry doesn't fall back into it; return to `/Signin` with *"You were still signed in as a different account. Please sign in again."*
+2. **Keycloak: "Pass login_hint" on every Microsoft provider (config).** Keycloak forwards the typed email to Microsoft, which then offers that account instead of silently reusing another session. Prevents most mismatches; step 1 is the safety net.
+3. **Keycloak `web` client: Valid post logout redirect URIs** must allow the return to `/Signin` (default `+` usually covers it; confirm once).
+
+**Edge cases:**
+- A local user whose Keycloak email has drifted from their CORE email would be blocked after a correct password. Also accept a match on `preferred_username`, and log every mismatch so drift surfaces.
+- A sign-in that didn't start at `/Signin` carries no typed email → skip the check. (Today `/Signin` is the only place that starts a sign-in.)
+
+**Rejected:** forcing `prompt=login` every time. Local users would retype their password on every visit, and it doesn't stop Microsoft-side reuse anyway.
+
+**Test:** (1) the reproduce steps above → message on `/Signin`, not signed in as A; (2) a normal sign-in with no other session → unchanged; (3) with Pass login_hint on, a leftover Microsoft session for another account → Microsoft offers the typed account.
+
 ## Deliberately not in this batch
-User Catalogue / User Security UI revamp (blocked on UX designs); SCIM server (phase 2, pending Freeport sign-off); any conversion between Local and SSO (structurally impossible — existing users' emails don't match their Entra identities); a customer self-service admin page for enabling SSO (client secret can only live in Keycloak, so engineering stays involved regardless — revisit if onboarding volume justifies it); enforcing `ExpectedTid`/`ExpectedOid` at login (reserved for future provisioning, not needed given G4 is structural); audit event catalogue (not required now that G4 has no runtime decision to log — revisit if SCIM or the customer admin page ever land).
+User Catalogue / User Security UI revamp (blocked on UX designs); SCIM server (phase 2, pending Freeport sign-off); any conversion between Local and SSO (structurally impossible — existing users' emails don't match their Entra identities); a customer self-service admin page for enabling SSO (client secret can only live in Keycloak, so engineering stays involved regardless — revisit if onboarding volume justifies it); audit event catalogue (revisit if SCIM or the customer admin page land; G4 refusals are currently only logged as warnings).
 
 ## Open questions
-1. How does the web app authenticate to the sign-in lookup (2.2)? It's called *before* login, so no bearer token exists yet. Leaning: a service credential from core-web, plus rate limiting either way.
+1. ~~How does the web app authenticate to the sign-in lookup (2.2)?~~ **Resolved:** `SignInController` (`POST /SignIn/Lookup`) is anonymous and doesn't log the submitted email. The in-app per-address rate limit was built and then removed on 2026-10-07: rate limiting is to be done in AWS (WAF, which needs an ALB or CloudFront in front of the API). Until then the lookup has no rate limit. Because every web sign-in reaches the API from core-web's address, a per-person limit on core-web's `/Signin` is still needed (next sprint). The API is on EC2 with no load balancer, so no proxy config is needed (re-add `KnownNetworks` if one is ever added); the 120/min default should be set from measured peak sign-ins — see [[2026-10-06 Sign-in Lookup Rate Limiting and Forwarded Headers Feature Explained]].
 2. Wording of the rejection messages an end user actually sees — to be drafted with Product.

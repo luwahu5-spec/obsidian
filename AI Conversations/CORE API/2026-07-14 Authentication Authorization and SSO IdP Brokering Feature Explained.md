@@ -1,6 +1,6 @@
 ---
 date: 2026-07-14
-updated: 2026-09-09
+updated: 2026-10-05
 source: Claude Code
 project: both
 tags: [domain-knowledge, auth, keycloak, oidc, sso, idp-brokering, site-authorization, user-management]
@@ -65,6 +65,12 @@ Keycloak = identity broker; CORE talks only to Keycloak; token still issued by t
    3. **User Attribute protocol mappers** on the `web` dedicated client scope (add to access token) — same mechanism as `site_id`.
    4. CORE reads `entra_tid` / `entra_oid` from the bearer token and stores them as `ExpectedTid`/`ExpectedOid` on the user record.
    **Design decision 2026-09-09 — NOT enforced at login.** Originally planned as a CORE-side runtime comparison (reject on mismatch), this was dropped: each customer's Keycloak provider is already bound to that customer's tenant by its own tenant-specific discovery URL, and the link-or-reject first-login flow (Step 3) already requires the user to pre-exist — so the tenant is guaranteed structurally before any CORE code runs. A redundant runtime check would add a failure mode (a wrongly-populated `ExpectedTid` blocking a legitimate user) without adding protection. The columns are captured and kept in the schema, reserved for future provisioning work (`oid` doubles as the future SCIM `externalId`) — see [[2026-08-27 SSO Enterprise Auth Ticket Breakdown]].
+   **Corrected 2026-10-01 — the structural argument doesn't hold.** The provider is bound to a tenant, but the *account* it links to isn't bound to a provider: Keycloak links by the email claim, which a tenant admin can set freely (proved by test, see Step 3). Layer A (Step 3, steps 4–6, config) blocks links to local accounts. **Layer B is built (2026-10-05):** `SsoTenantEnforcementMiddleware` (core-web-api `Services/`, registered between `UseAuthentication` and `UseAuthorization`) checks every signed-in API request, before any controller and so before the `oid` capture in `GetUserAsync`:
+   - SSO account → token `entra_tid` must equal the user's `ExpectedTid`; a missing tenant is refused (fail closed, so a provider without the tid mapper can't bypass it).
+   - Local account → must carry **no** `entra_tid` (one would mean an external identity was linked to it).
+   - Unmapped callers (machine clients) aren't checked. Result cached 5 minutes per user. Refusal = 403 plus a warning log with the user and both tenant IDs.
+   - It works because `entra_tid` is re-imported on every brokered sign-in (Attribute Importer, sync mode **Force**, item 2 above): a sign-in through the wrong tenant's provider overwrites it, and the mismatch is caught. **So every realm must have these mappers** before release, or every SSO user there gets 403.
+   - **Remaining gap:** a customer's own Entra admin pointing one of their users' Contact Email at another of their users passes both layers (same tenant). Closing it = also require token `entra_oid` = `ExpectedOid` once captured; not yet decided.
 9. **Hide on login page** (Advanced settings): removes the provider's button WITHOUT disabling it — `kc_idp_hint` still routes to it. With identity-first routing in CORE ([[2026-08-27 SSO Enterprise Auth Ticket Breakdown]] ticket 3.1–3.3) every customer provider gets this On, so the login page never grows a button per customer and local users see a password-only form. No `login.ftl`/theme edit needed. Verify routing BEFORE hiding, or SSO users have no way in; users hitting the Keycloak URL directly then see only the password form.
 10. Google variant: built-in Google social provider is fine (`/broker/google/endpoint`, same Trust Email + flow settings). Note: Google's test-user list is testing-mode-only — once published, ANY Google account authenticates; the gate is always Step 3.
 
@@ -74,6 +80,27 @@ Three gates now apply: the IdP answers "who is this?"; the first two executions 
 1. Correct realm → `Authentication → Flows → Create flow` — e.g. `sso first login (no auto-create)`, **Basic flow**.
 2. `Add step` → **Detect existing broker user** → **Required** (rejects an external identity when no matching Keycloak user exists).
 3. `Add step` → **Automatically set existing user** → **Required**, directly below it (selects the matching existing user for silent linking). This must run before the attribute condition because Keycloak must first place the existing user into the authentication context.
+4. `Add step → Add sub-flow` → name e.g. `Block non-SSO accounts`, flow type **generic** → Requirement **Conditional**. It must sit at the **same level as, and after**, *Automatically set existing user* (drag it there if needed; confirm in the table view, not the diagram). Final order:
+
+   | Step | Requirement |
+   |---|---|
+   | Detect existing broker user | Required |
+   | Automatically set existing user | Required |
+   | **Block non-SSO accounts** (sub-flow) | **Conditional** |
+
+5. Inside the sub-flow: `+ → Add condition` → **Condition - user attribute** → **Required** → ⚙ configure: Alias e.g. `account-is-not-sso` (cosmetic), Attribute name `auth_method`, Expected attribute value `sso`, Include group attributes **Off**, **Negate output On**. With negate on, the condition is true when the matched account is **not** an SSO account. (Same condition as Step 3b, opposite polarity.)
+6. Inside the sub-flow: `+ → Add step` → **Deny access** → **Required**. If the ⚙ settings offer an Error message, use the D1 wording: *"There is a problem with your account setup. Please contact your site administrator."*
+7. **Bind it per provider**: every customer provider's **First login flow** must be this flow (Step 2.6). Repeat the flow in every realm (staging, production).
+
+**Why the attribute gate exists (verified 2026-10-01):** *Detect existing broker user* matches the external identity to a Keycloak user **by the email claim alone**, regardless of which provider it came from or whether the target is an SSO account. The email claim comes from Entra's **Contact info → Email**, a free-text field a tenant admin can set to any address, including a domain the tenant doesn't own. Test: Entra user X (UPN in the test tenant) with Contact Email set to a **local** CORE account's address signed in via `kc_idp_hint=microsoft` and landed in Keycloak **as that local account**, no password asked. `/Signin` routing doesn't prevent it: routing is decided by what's typed on the way in, linking by what Microsoft returns on the way out, and Keycloak's URL can be opened directly with any `kc_idp_hint`. Entra "Assignment required" doesn't help either, because the attempt comes through the *attacker's* tenant app, whose groups the attacker controls. After adding steps 4–6 the same test is denied and no link is created.
+
+**What the gate does and doesn't cover:**
+- ✅ Blocks linking any external identity to a **local** account, including Minnovare Administrators.
+- ❌ Doesn't stop one SSO customer's identity reaching **another SSO customer's** user (both carry `auth_method=sso`). That's Layer B, the API tenant check, built 2026-10-05 (see Step 2.8).
+- Runs on **first login per provider only**: links that already exist are untouched (good for real users, but a bad link created before this flow existed stays until removed under *Users → Identity provider links*).
+- Every genuine SSO user must carry `auth_method=sso` (CORE sets it at creation since ticket 2.1). Any hand-made test user without it is now denied on first login.
+
+**Test:** (1) the attack above → Keycloak deny page; target user's *Identity provider links* stays empty. (2) Unlink a genuine SSO test user, sign in via `/Signin` → linked and in CORE as normal.
 
 
 ### Step 3b — custom Reset Credentials flow (G2: blocks self-service password reset for SSO users)
@@ -127,7 +154,15 @@ Force SSO-only for a customer: create their users with no password credential (n
 - 2026-07-17 — customize rejection message + Verify essential claim → theme-in-ECR-image + Step 2.7; tid/oid mappers designed & verified (Step 2.8); per-user email-claim trap confirmed twice (Step 4).
 - 2026-08-31 — "Multi-tenant test shows 'Approval required / KeyCloak unverified' — normal? How do we stop any tenant's user getting in just because a matching email exists in CORE? How does tid flow?" → "Approval required" = enterprise tenants disable user consent (admin consent needed per customer); "unverified" = no verified publisher (MPN/Partner Center linkage, a Hexagon corporate task), which many tenants block outright. Consent friction previews a customer security review — the practical case for per-customer registrations. (This answer was reached before the team settled on per-customer registrations exclusively; see the 2026-09-09 entry below for the final call on tid.)
 - 2026-09-09 — team decided the per-customer provider binding alone is sufficient proof of tenant (each provider only accepts its own tenant's tokens, and the user must pre-exist) — the CORE-side `tid` runtime check from the answer above is dropped as redundant. `ExpectedTid`/`ExpectedOid` remain captured and stored, reserved for future provisioning, not enforced. See [[2026-08-27 SSO Enterprise Auth Ticket Breakdown]].
+- 2026-10-05 — "Make sure Layer B is added as well" → built as API middleware `SsoTenantEnforcementMiddleware`; rule, rollout prerequisite and remaining same-tenant gap in Step 2.8.
+- 2026-10-01 — "Can Keycloak link a local user to an identity provider? How do I build Layer A?" → Yes: first-broker-login links by email claim only, and Entra Contact Email is admin-editable; proved by test (Entra user landed in a local account). Layer A = conditional sub-flow after *Automatically set existing user* (`auth_method` ≠ `sso` → Deny access), built and verified working. See Step 3 steps 4–7; Layer B (tenant check) built 2026-10-05, see Step 2.8.
 - 2026-09-09 — "Add the reset-credentials customization step" → Step 3b added: duplicate the built-in Reset Credentials flow, add a Conditional sub-flow with `Condition - user attribute` (auth_method=sso) + Deny Access, positioned between Choose User and Send Reset Email, bind it as the realm's Reset credentials flow. Built and verified working in corelocal.
+- 2026-10-12 — "Why is the sign-in lookup POST, not GET?" → Privacy, not semantics. The lookup is read-only, so GET would be technically correct, but GET puts the email in the URL.
+  - URLs get written to API/IIS access logs, proxy and load-balancer logs, and monitoring.
+  - The endpoint is anonymous, so that would log personal data, including guessed addresses.
+  - GET responses can also be cached by intermediaries.
+  - With POST the address travels in the body, which isn't logged by default (`SignInController.cs:52-54`; core-web `SignInLookupService.cs:63` `PostAsJsonAsync`).
+  - The controller also never logs the typed email (tested in `SignInControllerTests` `LookupAsync_NeverLogsTheTypedEmail`).
 
 ## Related
 - [[2026-07-14 PRD Enterprise Authentication User Management Analysis]] — the Freeport/Entra PRD mapped onto this architecture
