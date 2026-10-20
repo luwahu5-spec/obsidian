@@ -100,7 +100,7 @@ Basis is a count of web users in the local prod-copy database. CORE stores no si
   - Set the limit to 3–5× that peak.
   - Change it per environment via `SignInLookup:PermitLimitPerMinute`, with no code change.
 - **Limits of a per-IP cap.** It slows one machine (120/min ≈ 170k guesses/day per IP). It does little against a distributed attacker.
-- **Real per-person protection** is the next-sprint per-person limit on core-web's `/Signin`.
+- **Per-person protection** on core-web's `/Signin` is covered by the AWS rate-limiting task (decided 2026-10-14), not by code. It needs an ALB or CloudFront in front of core-web before a WAF rate-based rule can apply.
 
 ### Why not AWS throttling instead (2026-10-07)
 - **"API throttling" is an API Gateway feature, not EC2.** Our API is on a plain EC2 instance with nothing in front of it, so there is nothing to configure in the console today.

@@ -46,6 +46,15 @@ No custom code builds or sends it: ASP.NET Core's **OpenID Connect handler** doe
 - **What changed is the trigger.** `DefaultChallengeScheme` is now `Cookies` with `LoginPath = "/Signin"` (`Startup.cs:245`, `:253`), so unauthenticated users first land on the email page. `Signin.cshtml.cs` then calls `Challenge(properties, "oidc")`, the same call the old `/Login` made.
 - `OnRedirectToIdentityProvider` now adds `kc_idp_hint`, which sends SSO users straight to their company's IdP, and `login_hint`, which pre-fills the email (`:272-287`).
 - `DefaultSignOutScheme = "oidc"` is pinned (`:248`). It would otherwise follow the challenge scheme, and sign-out would stop ending the Keycloak session.
+- **Account check between steps 5 and 7 (added 2026-10-14).** `OnTokenValidated = SignInAccountCheck.OnTokenValidated` (core-web `Startup.cs:292`) runs after the code exchange, before CORE's cookie exists.
+  - It compares the email typed on `/Signin` (carried in `AuthenticationProperties.Items[SigninModel.LoginHintKey]`) with the token's `email` or `preferred_username` (`SignInAccountCheck.cs:52-59`, rule `IsSameAccount` `:34`).
+  - **Match:** the flow continues to step 6.
+  - **Mismatch** (someone else's live Keycloak/Microsoft session was reused): warning log with subject only, `HandleResponse()` (no cookie), then a redirect via Keycloak's end-session endpoint (`id_token_hint`, `post_logout_redirect_uri`) to `/Signin?reason=account-mismatch` (`:60-98`). `Signin.cshtml.cs:48` shows the message for that reason.
+  - Sign-ins with no typed email (not started at `/Signin`) skip the check. Tests: `SignInAccountCheckTests`.
+  - **Where the logout inputs come from** (`SignInAccountCheck.cs:85-86`). Nothing extra is fetched:
+    - `context.Options.ConfigurationManager.GetConfigurationAsync()` returns Keycloak's discovery document (`<Authority>/.well-known/openid-configuration`). The OIDC handler downloads and caches it (~24 h) from `options.Authority`, and already loaded it for the code exchange. We read `EndSessionEndpoint` from it, so the logout URL isn't hard-coded.
+    - `context.TokenEndpointResponse.IdToken` is the ID token from the server-side code exchange (step 5); with `ResponseType = Code` that's where it lives. `context.ProtocolMessage.IdToken` (the browser-returned message) is only set in hybrid/implicit flows, so it's a fallback.
+    - The ID token is sent as `id_token_hint`. It names the session to end and lets Keycloak redirect to `post_logout_redirect_uri` without a confirmation page.
 
 ## API side: validation and client check
 
@@ -80,6 +89,18 @@ Other Keycloak flows for the app: **Device Authorization Grant** also works with
 - 2026-09-24: "Does Keycloak redirect to localhost:5005 and forward only the access token?" → Redirect URI yes (`/signin-oidc`); what comes back is a one-time **code**, exchanged server-side for three tokens. See *The login flow*.
 - 2026-09-24: "Which code executes the redirect to Keycloak?" → ASP.NET Core's OIDC handler; our code only triggers/configures it. See *Who actually executes the redirect*.
 - 2026-09-24: "Is web SSO possible just because web can open a browser? Does the app need code changes or only Keycloak config?" → A redirect-based flow is what matters; the app needs code changes. See *Why the Android app is different*.
+- 2026-10-14 — "Convert Signin.cshtml to a Razor (Blazor) page" → Not possible as-is in core-web's classic Blazor Server setup.
+  - **Redirect loop:** every `.razor` page is served through `_Host.cshtml` (`MapFallbackToPage`), and the global MVC `AuthorizeFilter` (RequireAuthenticatedUser, Startup.cs:149-153) applies to `_Host`. An anonymous visitor to a Blazor `/Signin` is redirected to LoginPath `/Signin` again, in a loop. `[AllowAnonymous]` on the component is only checked by the Blazor router, after `_Host` already refused.
+  - **No HTTP response:** Blazor Server events run over SignalR, so there is no HTTP response for the OIDC challenge (302 + correlation/nonce cookies).
+  - Recommendation: keep `/Signin` as a Razor Page; restyle it to match the Blazor pages if consistency is the goal.
+- 2026-10-14 — "Other pages call the API through a repository; why does /Signin use its own SignInLookupService, and should it use a repository?" → Keep the separate service. Repositories (`BaseApiRepository` → `ApiService`) are built for **signed-in** callers.
+  - They attach the user's bearer token from `TokenStore`, read from the auth cookie in the `BaseApiRepository` constructor (`BaseApiRepository.cs:37-53`), on every call (`ApiService.cs:47` etc.). Before sign-in there is no token.
+  - They treat 401 as "session needs refreshing" (`UnauthorizedException`, `BaseComponent.cs:191`), which means nothing before sign-in.
+  - They throw typed exceptions for Blazor and page error handling, and have no timeout (`ApiService.cs:37` commented out, so the 100 s default).
+  - `SignInLookupService` is anonymous on purpose (no token), uses a named HttpClient with a 10 s timeout (`Startup.cs:81`), and turns any failure into `(Reject, lookupSucceeded:false)` (`SignInLookupService.cs:60-78`), so the page shows "unable to sign you in right now" rather than an error page. Fail closed, never guessing a route.
+  - Moving it into a repository would mean special-casing `ApiService` for anonymous calls; at most rename/move it for folder consistency (cosmetic).
+- 2026-10-14 — "How is SignInAccountCheck used?" → Three places: wired as the OIDC `OnTokenValidated` event (`Startup.cs:292`), its `AccountMismatchReason` read by `/Signin` to show the message (`Signin.cshtml.cs:48`), and `IsSameAccount` unit-tested. See *What the SSO work changed* (account check bullet).
+- 2026-10-15 — "Where do `ConfigurationManager.GetConfigurationAsync` and `TokenEndpointResponse/ProtocolMessage.IdToken` come from?" → OIDC handler state: the cached discovery document (gives `end_session_endpoint`) and the code-exchange response (gives the ID token for `id_token_hint`). See the account check bullet.
 
 ## Related
 - [[2026-07-14 Authentication Authorization and SSO IdP Brokering Feature Explained]]: living doc for the auth/authz chain and SSO brokering

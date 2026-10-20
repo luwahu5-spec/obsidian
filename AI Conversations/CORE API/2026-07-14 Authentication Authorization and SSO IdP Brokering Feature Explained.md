@@ -80,7 +80,7 @@ Three gates now apply: the IdP answers "who is this?"; the first two executions 
 1. Correct realm → `Authentication → Flows → Create flow` — e.g. `sso first login (no auto-create)`, **Basic flow**.
 2. `Add step` → **Detect existing broker user** → **Required** (rejects an external identity when no matching Keycloak user exists).
 3. `Add step` → **Automatically set existing user** → **Required**, directly below it (selects the matching existing user for silent linking). This must run before the attribute condition because Keycloak must first place the existing user into the authentication context.
-4. `Add step → Add sub-flow` → name e.g. `Block non-SSO accounts`, flow type **generic** → Requirement **Conditional**. It must sit at the **same level as, and after**, *Automatically set existing user* (drag it there if needed; confirm in the table view, not the diagram). Final order:
+4. `Add Add sub-flow` → name e.g. `Block non-SSO accounts`, flow type **generic** → Requirement **Conditional**. It must sit at the **same level as, and after**, *Automatically set existing user* (drag it there if needed; confirm in the table view, not the diagram). Final order:
 
    | Step | Requirement |
    |---|---|
@@ -123,6 +123,15 @@ Three gates now apply: the IdP answers "who is this?"; the first two executions 
 - **Login Events**: Realm settings → Save events → error codes in the Events view.
 - **Claims viewer**: temporarily restore the default first-login flow — the "Update Account Information" page pre-fills exactly what the token carried; cancel without submitting.
 - **One user rejects while others work** (rejection shows opaque `sub`): claim presence is per-user — check (1) cached Microsoft session logged in a DIFFERENT account → retest incognito typing the UPN; (2) that user's Email property unset (Step 1.5); (3) user is Guest/`#EXT#` instead of native.
+- **SSO user always gets "account mismatch" in the normal browser but works in Incognito (diagnosed 2026-10-15).**
+  - Decode the `id_token_hint` in the logout URL: it shows the account Keycloak actually signed in, e.g. the developer's own work account (`li.cui@hexagon.com`, Administrator). `auth_time` ≈ `iat` means a fresh brokered sign-in, not a reused Keycloak session.
+  - Cause: the browser/Windows is already signed in to the **same Entra tenant** with the work account, and Entra silently returns that identity. Keycloak then signs in whichever Keycloak user that Entra identity is linked to. Clearing the cache doesn't remove Windows/Microsoft SSO.
+  - The loop repeats because `/Signin` isn't in the `web` client's Valid post logout redirect URIs: Keycloak shows the redirect error **without** ending the session.
+  - Fix:
+    - **Pass login_hint** on the provider.
+    - Add the post-logout redirect URI.
+    - Check the admin account's *Identity provider links* and unlink any link made before Layer A (an existing link skips first-broker-login, so Layer A never runs).
+    - Optionally set the provider Prompt = `select_account` for testing on a machine signed in to the same tenant.
 - Email still missing despite scopes + property: App registration → Token configuration → optional claim `email` (+`upn`) on the ID token.
 - Token inspection: `Clients → web → Client scopes → Evaluate → Generate access token`.
 - "Unexpected error when authenticating with identity provider" = broker **callback** failure (secret/issuer/endpoint) — fires BEFORE the first-login flow, a pre-created user can't help; recheck Step 2.
@@ -163,6 +172,7 @@ Force SSO-only for a customer: create their users with no password credential (n
   - GET responses can also be cached by intermediaries.
   - With POST the address travels in the body, which isn't logged by default (`SignInController.cs:52-54`; core-web `SignInLookupService.cs:63` `PostAsJsonAsync`).
   - The controller also never logs the typed email (tested in `SignInControllerTests` `LookupAsync_NeverLogsTheTypedEmail`).
+- 2026-10-15 — "SSO user in my company tenant always gets account mismatch unless Incognito — root cause?" → Work-account Microsoft/Windows SSO in the same tenant is used silently; Keycloak signs in the account linked to it. See the troubleshooting bullet.
 
 ## Related
 - [[2026-07-14 PRD Enterprise Authentication User Management Analysis]] — the Freeport/Entra PRD mapped onto this architecture

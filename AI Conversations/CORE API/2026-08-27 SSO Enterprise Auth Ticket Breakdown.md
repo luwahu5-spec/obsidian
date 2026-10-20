@@ -148,6 +148,13 @@ Each ticket delivers one working capability end to end.
 ## Next sprint
 
 ### Sign-in must be the person whose email was typed (live-session reuse)
+
+> **Status 2026-10-14: step 1 (core-web check) built.**
+> - `SignInAccountCheck.OnTokenValidated`, wired in `Startup.cs`: matches the typed email against the token's `email` or `preferred_username`, ignoring case.
+> - On a mismatch it logs a warning with the subject only (no emails), stops the sign-in (`HandleResponse`, so no CORE cookie), and redirects through Keycloak's end-session endpoint (`id_token_hint` + `post_logout_redirect_uri`) to `/Signin?reason=account-mismatch`, which shows the message.
+> - A token with neither claim is refused (fail closed).
+> - Tests: `Minnovare.Core.Web.Test/SignInAccountCheckTests.cs` (12).
+> - **Still open:** steps 2 and 3 below are Keycloak config, per environment.
 **Problem:** `/Signin` checks the typed email *exists* in CORE, but nothing checks that the person who actually ends up signed in *is* that email. If the browser still holds a live Keycloak or Microsoft session for person A, typing person B's (valid) email routes to Keycloak, which silently signs in **A**, and the user lands in CORE as A. Likely on shared site-office PCs. Reproduce: while signed in as A, open `/Signin` in the same browser and type another existing user's email → you arrive as A.
 
 **Fix (decided 2026-10-05):**
@@ -167,5 +174,5 @@ Each ticket delivers one working capability end to end.
 User Catalogue / User Security UI revamp (blocked on UX designs); SCIM server (phase 2, pending Freeport sign-off); any conversion between Local and SSO (structurally impossible — existing users' emails don't match their Entra identities); a customer self-service admin page for enabling SSO (client secret can only live in Keycloak, so engineering stays involved regardless — revisit if onboarding volume justifies it); audit event catalogue (revisit if SCIM or the customer admin page land; G4 refusals are currently only logged as warnings).
 
 ## Open questions
-1. ~~How does the web app authenticate to the sign-in lookup (2.2)?~~ **Resolved:** `SignInController` (`POST /SignIn/Lookup`) is anonymous and doesn't log the submitted email. The in-app per-address rate limit was built and then removed on 2026-10-07: rate limiting is to be done in AWS (WAF, which needs an ALB or CloudFront in front of the API). Until then the lookup has no rate limit. Because every web sign-in reaches the API from core-web's address, a per-person limit on core-web's `/Signin` is still needed (next sprint). The API is on EC2 with no load balancer, so no proxy config is needed (re-add `KnownNetworks` if one is ever added); the 120/min default should be set from measured peak sign-ins — see [[2026-10-06 Sign-in Lookup Rate Limiting and Forwarded Headers Feature Explained]].
+1. ~~How does the web app authenticate to the sign-in lookup (2.2)?~~ **Resolved:** `SignInController` (`POST /SignIn/Lookup`) is anonymous and doesn't log the submitted email. The in-app per-address rate limit was built and then removed on 2026-10-07: rate limiting is to be done in AWS (WAF, which needs an ALB or CloudFront in front of the API). Until then the lookup has no rate limit. Throttling the sign-in itself (per person or per IP, on core-web's `/Signin` as well as the API lookup) is **covered by the same AWS rate-limiting task**, decided 2026-10-14; no rate limiting is written in application code. That task needs an ALB or CloudFront in front of core-web and the API before a WAF rate-based rule can be attached — see [[2026-10-06 Sign-in Lookup Rate Limiting and Forwarded Headers Feature Explained]].
 2. Wording of the rejection messages an end user actually sees — to be drafted with Product.

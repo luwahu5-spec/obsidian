@@ -259,6 +259,13 @@ plus a forced deployment. Without that label you must find the old image by `sha
 7. **Git Bash rewrites Unix paths on Windows**, turning `/opt/keycloak/...` into `C:/Users/.../opt/keycloak/...`. Use PowerShell for Docker commands, or prefix with `MSYS_NO_PATHCONV=1`.
 8. **`docker cp` takes no spaces around the colon** — `container:/path`, not `container : /path`.
 9. **OneDrive-synced folders** used as mounts must be set to *"Always keep on this device"*, or the container cannot read cloud-only placeholder files.
+10. **Deployed page shows the new layout but old styling = browser cache (confirmed 2026-10-14).**
+    - Outside dev mode Keycloak serves theme CSS with ~30-day caching, at `/resources/<version>/…`. `<version>` follows the Keycloak release, not the theme, so a theme deploy keeps the same CSS URL. Templates and messages are rendered per request and update at once; CSS doesn't.
+    - Confirm with a private window or DevTools → Network → *Disable cache*.
+    - Prevent it: version the stylesheet URLs in `login/theme.properties` (`styles=css/login.css?v=2 css/tile.css?v=2`) and bump on every CSS change.
+11. **`docker cp` from a OneDrive folder can abort halfway** (`io: read/write on closed pipe` on a cloud-only file). The container then has only part of the theme; `docker diff kc-build` shows few changed paths and no `login/…` files.
+    - Copy to a local folder first (`robocopy <OneDrive theme> C:\temp\Hexagon-New /E`) and `docker cp` from there.
+    - Commit to a local name, check it with `docker images`, then `docker tag` → push. On the containerd image store a committed image was seen to vanish, giving `tag does not exist` on push.
 
 ## Standing recommendation
 
@@ -275,3 +282,6 @@ That makes each change a pull request and puts the theme under version control. 
 - [[2026-09-16 Confluence — How to Update the Keycloak Login Theme]] — the team-facing version of this runbook
 - [[2026-07-14 Authentication Authorization and SSO IdP Brokering Feature Explained]] — the realm configuration this theme sits on
 - [[2026-08-27 SSO Enterprise Auth Ticket Breakdown]] — ticket 4.5 is the theme work, 4.2 the reset-credentials flow
+
+
+> After deploying `Hexagon-New` to an environment, set the realm's supported locales with the kcadm runbook in [[2026-10-13 Keycloak Invalid Language Tag in Localization]] (section "Runbook: enable the five picker locales"), otherwise the language picker shows only Portuguese (Brazil) and Spanish.
