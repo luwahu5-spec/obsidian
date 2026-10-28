@@ -1,6 +1,6 @@
 ---
 date: 2026-08-27
-updated: 2026-10-05
+updated: 2026-10-21
 source: Claude Code
 project: core-web-api (Layers 1–2), core-web (Layer 3), infra (Layer 4)
 tags: [planning, tickets, sso, enterprise-auth, keycloak, entra-id]
@@ -136,12 +136,13 @@ Each ticket delivers one working capability end to end.
 
 | # | Task | Notes |
 |---|---|---|
-| 4.1 | Per-customer provider checklist | Alias = customer slug (immutable, unique per realm), client ID/secret, tenant-specific discovery URL, Trust Email on, first-login flow attached, **Hide on login page = On** |
+| 4.1 | Per-customer provider checklist | Alias = customer slug (immutable, unique per realm), client ID/secret, tenant-specific discovery URL, Trust Email on, first-login flow attached, **Hide on login page = On**; customer's Entra admin **grants admin consent** for the app registration (otherwise every user gets "Approval required"; found 2026-10-21); **IdP mappers: Attribute Importer `tid`→`entra_tid` and `oid`→`entra_oid`, sync mode Force** (otherwise the token has no `entra_tid` and every SSO user of that customer gets 403 / Access denied; found 2026-10-22) |
 | 4.2 | **G2 — reset-credentials deny** | ✅ Built and verified 2026-09-09 in `corelocal`: `Condition - user attribute` (`auth_method`=`sso`) + `Deny Access`, positioned between "Choose User" and "Send Reset Email" in a duplicated + bound Reset Credentials flow. This task is repeating the same config in staging/production |
 | 4.3 | Claim mappers | Attribute Importer (Sync mode Force) for `tid`/`oid` → user attributes; protocol mappers exposing them in the access token — built for future use, not consumed by any check yet |
 | 4.4 | Realm runbook | Everything above, written up per environment; currently only built by hand in `corelocal`. Includes onboarding order: record the customer's tenant → create their users → enable login (never backfill); derive the tenant ID from their email domain via the discovery endpoint rather than trusting a typed GUID; delete stray test providers |
-| 4.5 | Login theme | Rejection message override + Hexagon branding, baked into the Keycloak image (ECR/ECS — no server to hand-edit) |
+| 4.5 | Login theme | Rejection message override + Hexagon branding, baked into the Keycloak image (ECR/ECS — no server to hand-edit). Includes the identity-first pages for 4.7 (`login-username.ftl` pass-through, `login-password.ftl`) |
 | 4.6 | Keycloak upgrade evaluation (20 → 26) | Unlocks Organizations and Verify essential claim; KC 20 is out of security support |
+| 4.7 | **Identity-first browser flow (D-002, before delivery)** | Separate Username Form → Conditional (`auth_method`=`sso` → Deny Access) → Password Form, bound as Browser flow in every realm; `web` client Home URL = `/Signin`; theme: `login-username.ftl` auto-continues on `login_hint`, `login-password.ftl` restyled. Stops an SSO user who cancels on Microsoft from landing on a password form. Recipe in [[2026-07-14 Authentication Authorization and SSO IdP Brokering Feature Explained]] Step 3c, tracking in [[Defect]] D-002 |
 
 ---
 

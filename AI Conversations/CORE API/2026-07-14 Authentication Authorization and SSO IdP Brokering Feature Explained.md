@@ -1,6 +1,6 @@
 ---
 date: 2026-07-14
-updated: 2026-10-05
+updated: 2026-10-21
 source: Claude Code
 project: both
 tags: [domain-knowledge, auth, keycloak, oidc, sso, idp-brokering, site-authorization, user-management]
@@ -50,6 +50,8 @@ Keycloak = identity broker; CORE talks only to Keycloak; token still issued by t
    - **The tenant ID is NOT a secret** — derive it yourself from the customer's email domain via `https://login.microsoftonline.com/<domain>/v2.0/.well-known/openid-configuration` (the `issuer` field carries the GUID), then confirm it back to them. Removes transcription errors (a mistyped GUID locks out every user with a confusing tid mismatch) and removes a trust step. Ask only for the **domain(s)**, which routing needs anyway.
    - Only the **client secret** needs a secure channel (never email) — and only in the per-customer model; a shared multi-tenant app takes no secret from the customer at all.
    - **Superseded 2026-09-09:** the domain-collection/`CustomerIdentityProvider`-table plan below is replaced by three columns directly on `Customer` (`IdpAlias`, `TenantId`, `SsoEnabled`) — routing resolves by the user's own `AuthenticationMethod`/`CustomerId`, never by email domain, so a domains table was never actually load-bearing. One tenant per customer is the common case; if a customer ever needs two (post-acquisition), extract into a child table then. Also collect **named identity-admin contacts** (needed for support escalation). The whole exchange fits FMI's existing intake (§5.1 + Appendix A questionnaire). See [[2026-08-27 SSO Enterprise Auth Ticket Breakdown]] for the current data model.
+
+**Admin consent (found 2026-10-21):** a tenant admin must grant consent once per app registration: **API permissions → Grant admin consent for <tenant>** (Global Admin, Privileged Role Admin, Cloud Application Admin or Application Admin), or approve the request under *Enterprise applications → Activity → Admin consent requests*. "Admin consent required = No" on a permission only means a user *could* consent where the tenant allows it. Most corporate tenants (Hexagon included) switch user consent off, and guests usually can't consent at all. Until it is granted, every user gets Microsoft's **"Approval required"** page, and **Status** shows "Granted for <tenant>" only once it is done. A user's "Request approval" goes to the reviewers IT configured, not to the app owner. → **Every customer's admin must do this in their own tenant**, so it belongs on the onboarding checklist.
 
 ### Step 2 — Keycloak provider
 1. **Add provider → OpenID Connect v1.0** — never the built-in "Microsoft" social provider (consumer endpoints; single-tenant apps fail with `unauthorized_client: not enabled for consumers`).
@@ -118,11 +120,57 @@ Three gates now apply: the IdP answers "who is this?"; the first two executions 
 
 **Version note:** `Condition - user attribute` was present and usable on this KC 20 instance — worth reconfirming when repeating this in staging/production (ticket 4.4), since availability isn't guaranteed across every KC 20.x build.
 
+### Step 3c — identity-first browser flow (pending, must be done before delivery: [[Defect]] D-002)
+**Why:** if an SSO user presses **Cancel** on Microsoft's page (or **Back to app** while a consent request is pending), Microsoft returns `access_denied`. Keycloak treats it as "backed out of the identity provider" and falls back to its own login forms. That is fixed Keycloak behaviour with no setting to change it. With the stock *Username Password Form* the user sees "Enter password" with their email filled in, and an SSO user has no password. Keycloak only knows who the person is after that combined form succeeds, so no condition placed after it can ever fire for an SSO user. The email and password must be **separate steps**.
+
+1. `Authentication → Flows → browser` → ⋮ → **Duplicate** → e.g. `Browser (identity-first)`.
+2. In its forms sub-flow, replace *Username Password Form* with this order (table view):
+
+   | Step | Requirement |
+   |---|---|
+   | Cookie | Alternative |
+   | Identity Provider Redirector | Alternative |
+   | forms (sub-flow) | Alternative |
+   | ↳ **Username Form** | Required |
+   | ↳ `SSO accounts use their organisation` (sub-flow) | **Conditional** |
+   | ↳↳ Condition - user attribute: `auth_method` = `sso`, Negate **Off** | Required |
+   | ↳↳ Deny Access, message "Your account signs in through your organisation. Return to CORE to sign in again." | Required |
+   | ↳ **Password Form** | Required |
+3. **Bind flow → Browser flow**, and confirm the **Used by** column.
+4. **`web` client → Home URL** = CORE `/Signin` for that environment, so the error page shows "Back to application".
+5. **Theme (`Hexagon-New`):**
+   - `login-username.ftl` continues by itself when CORE passed `login_hint` and there is no message. The snippet is in [[Defect]] D-002. Without it, every local user gets an extra email page and an SSO user who cancelled needs one more click to reach the message.
+   - `login-password.ftl` carries the `login.ftl` design: "Enter password", the "Incorrect password" line above "Forgot your password?", 14px fonts.
+
+**Result:**
+- **Local user:** `/Signin` → (email step passes straight through) → password page.
+- **SSO user who cancels on Microsoft:** straight to the Deny Access message.
+- **Anyone opening Keycloak directly:** normal email page; SSO users are refused instead of being offered a password box.
+
+**Test on every realm:**
+- SSO user cancels on Microsoft → error page with a link back to CORE;
+- local user → password page with no extra click;
+- unknown email → error, no loop;
+- Keycloak URL opened directly → email page.
+
+**Status 2026-10-21:** flow built on `corelocal`, where it correctly shows the Deny Access message after one extra click. The theme part is written but not applied, so the auto-continue is missing. Kept as D-002 until before delivery.
+
 ### Step 4 — verify & debug (no server-log access)
 - Test matrix: matching pre-created user → straight in (link visible under *Identity provider links*); unknown account → rejected, no user created.
 - **Login Events**: Realm settings → Save events → error codes in the Events view.
 - **Claims viewer**: temporarily restore the default first-login flow — the "Update Account Information" page pre-fills exactly what the token carried; cancel without submitting.
 - **One user rejects while others work** (rejection shows opaque `sub`): claim presence is per-user — check (1) cached Microsoft session logged in a DIFFERENT account → retest incognito typing the UPN; (2) that user's Email property unset (Step 1.5); (3) user is Guest/`#EXT#` instead of native.
+- **New SSO user signs in at the IdP fine, then CORE shows Access denied / "Page not found" (confirmed 2026-10-22).**
+  - Cause: the customer's provider had **no IdP mappers**, so the access token had no `entra_tid` and Layer B refused every API call (403 → `ForbiddenException` → `/Account/AccessDenied`).
+  - IdP mappers are **per provider**: a provider added after the Step 2.8 test doesn't inherit them.
+  - Tell-tales:
+    - `site_id` is present in the token but `entra_tid` isn't.
+    - The user's `ExpectedOid` is still NULL (no API call ever accepted).
+    - "User claims: None" on the details page is normal: `CreateSiteUser` stores `site_id` only as a Keycloak attribute.
+  - Fix:
+    - On that provider: Attribute Importer `tid`→`entra_tid` and `oid`→`entra_oid`, sync mode **Force**.
+    - Sign in again so the mapper runs.
+  - The "Page not found" text is cosmetic: Blazor navigates to the Razor Page `/Account/AccessDenied` without a full page load (`Utils.cs:86`).
 - **SSO user always gets "account mismatch" in the normal browser but works in Incognito (diagnosed 2026-10-15).**
   - Decode the `id_token_hint` in the logout URL: it shows the account Keycloak actually signed in, e.g. the developer's own work account (`li.cui@hexagon.com`, Administrator). `auth_time` ≈ `iat` means a fresh brokered sign-in, not a reused Keycloak session.
   - Cause: the browser/Windows is already signed in to the **same Entra tenant** with the work account, and Entra silently returns that identity. Keycloak then signs in whichever Keycloak user that Entra identity is linked to. Clearing the cache doesn't remove Windows/Microsoft SSO.
@@ -173,6 +221,7 @@ Force SSO-only for a customer: create their users with no password credential (n
   - With POST the address travels in the body, which isn't logged by default (`SignInController.cs:52-54`; core-web `SignInLookupService.cs:63` `PostAsJsonAsync`).
   - The controller also never logs the typed email (tested in `SignInControllerTests` `LookupAsync_NeverLogsTheTypedEmail`).
 - 2026-10-15 — "SSO user in my company tenant always gets account mismatch unless Incognito — root cause?" → Work-account Microsoft/Windows SSO in the same tenant is used silently; Keycloak signs in the account linked to it. See the troubleshooting bullet.
+- 2026-10-22 — "SSO user under site 114: site_id in Keycloak but Access denied, and no entra_tid" → the `developer` provider had no tid/oid Attribute Importer mappers; adding them fixed it. See troubleshooting.
 
 ## Related
 - [[2026-07-14 PRD Enterprise Authentication User Management Analysis]] — the Freeport/Entra PRD mapped onto this architecture

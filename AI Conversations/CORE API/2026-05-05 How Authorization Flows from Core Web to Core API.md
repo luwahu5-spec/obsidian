@@ -84,6 +84,24 @@ Other Keycloak flows for the app: **Device Authorization Grant** also works with
 3. Inspect what the API sees: **`GET /Identity`** (`IdentityController`) returns all claims from the bearer token. Perfect for comparing expectation vs reality.
 4. Decode the token: if `"aud": "account"` but the API requires `Audience = "api"`, it's rejected regardless of roles. Fix with the Keycloak audience mapper (see [[2026-05-04 Keycloak SSO and Audience Mapper]]).
 
+## Language across sign-in (feasibility, 2026-10-21)
+
+Goal: the language picked on `/Signin` is used on the Keycloak page and throughout core-web.
+
+- **core-web leg: already wired.**
+  - The selector posts to `/` (`Index.OnPost`, anonymous), which writes the `.AspNetCore.Culture` cookie on core-web's host (`Index.cshtml.cs:28-39`). It survives the Keycloak round trip.
+  - `UseRequestLocalization` gets a freshly built `RequestLocalizationOptions` (`Startup.cs:425-430`), so the default providers apply: query string → cookie → `Accept-Language`. The DI-configured provider list (cookie, query) is used only for the selector's culture list. A user who never picks a language gets the browser language.
+  - Nothing after sign-in overrides the cookie.
+  - The anonymous selector, `SigninModel` localizer and 7 resx are **not yet built or run** (unverified).
+- **Keycloak leg: built 2026-10-21 (MC-1814, uncommitted).** `SignInRedirectHints.OnRedirectToIdentityProvider` sets `ProtocolMessage.UiLocales` = `IRequestCultureFeature.RequestCulture.UICulture.Name`, the culture core-web resolved, not the raw cookie. Tests: `SignInRedirectHintsTests` (6 new).
+  - **Why `ui_locales`, proven on corelocal** (read-only GETs of the login page):
+    - `kc_locale=es` is ignored on the authorization request, and loses to a `KEYCLOAK_LOCALE` cookie.
+    - `ui_locales=es` → Spanish, even with cookie `fr`.
+  - **No mapping:** Keycloak matches by language itself: `ui_locales=pt` → Portuguese (Brazil), `fr-CA` → French (Canada), `en-AU` → English (Australia).
+  - **Per realm:** Internationalization ON with supported locales **en-AU, en-US, es, fr-CA, pt-BR** (corelocal's list = core-web's cultures). A realm missing a locale falls back to its default.
+- **SSO users** skip the Keycloak page (`kc_idp_hint`). The Microsoft page language belongs to Entra/browser; whether KC 20 can forward the locale to the IdP is unverified.
+- **Not covered:** a language changed on the Keycloak page doesn't flow back (would need a `locale` claim mapper + set the cookie in `OnTokenValidated`). Signed-in non-admins can't change language (selector hidden).
+
 ## Questions asked
 - 2026-05-05: why does the API return 401 when the web is signed in? → Audience mapper; see the playbook.
 - 2026-09-24: "Does Keycloak redirect to localhost:5005 and forward only the access token?" → Redirect URI yes (`/signin-oidc`); what comes back is a one-time **code**, exchanged server-side for three tokens. See *The login flow*.
@@ -101,6 +119,7 @@ Other Keycloak flows for the app: **Device Authorization Grant** also works with
   - Moving it into a repository would mean special-casing `ApiService` for anonymous calls; at most rename/move it for folder consistency (cosmetic).
 - 2026-10-14 — "How is SignInAccountCheck used?" → Three places: wired as the OIDC `OnTokenValidated` event (`Startup.cs:292`), its `AccountMismatchReason` read by `/Signin` to show the message (`Signin.cshtml.cs:48`), and `IsSameAccount` unit-tested. See *What the SSO work changed* (account check bullet).
 - 2026-10-15 — "Where do `ConfigurationManager.GetConfigurationAsync` and `TokenEndpointResponse/ProtocolMessage.IdToken` come from?" → OIDC handler state: the cached discovery document (gives `end_session_endpoint`) and the code-exchange response (gives the ID token for `id_token_hint`). See the account check bullet.
+- 2026-10-21 — "Can the language chosen on /Signin carry to the Keycloak page and all of core-web?" → core-web: yes, already (culture cookie). Keycloak: feasible, ~15 lines in `OnRedirectToIdentityProvider` + per-realm locale config; parameter precedence to verify. See *Language across sign-in*.
 
 ## Related
 - [[2026-07-14 Authentication Authorization and SSO IdP Brokering Feature Explained]]: living doc for the auth/authz chain and SSO brokering

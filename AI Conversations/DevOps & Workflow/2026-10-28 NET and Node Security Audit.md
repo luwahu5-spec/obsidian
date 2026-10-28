@@ -115,22 +115,22 @@ Found with `dotnet list package --outdated` (and `--highest-patch` for the 8.0 l
 
 ### Microsoft / framework packages
 
-| Package | We use | Stay on .NET 8 | Latest | Repo | Note |
-|---|---|---|---|---|---|
-| Microsoft.EntityFrameworkCore (+ .SqlServer, .Sqlite, .Design, .Tools, .Proxies) | 8.0.23 | **8.0.33** | 10.0.14 | api | Patch bump only |
-| Microsoft.AspNetCore.Diagnostics.EntityFrameworkCore | 8.0.23 | **8.0.33** | 10.0.14 | api | |
-| Microsoft.EntityFrameworkCore.InMemory | 8.0.23, 6.0.1, 6.0.36, **7.0.0-preview.2** | **8.0.33** everywhere | 10.0.14 | api tests | Mixed versions, one is a 2022 preview |
-| Microsoft.EntityFrameworkCore.Sqlite | 8.0.23, 6.0.14 | **8.0.33** | 10.0.14 | api | 6.0.14 is from a net6 side project |
-| Microsoft.AspNetCore.Identity.EntityFrameworkCore / .Identity.UI / .Mvc.NewtonsoftJson | 6.0.1 | latest 8.0.x | 10.0.14 | api | 6.0 packages inside a net8 app |
-| Microsoft.AspNetCore.TestHost | 6.0.8 | latest 8.0.x | 10.0.14 | api tests | |
-| Microsoft.AspNetCore.Authentication.OpenIdConnect | 6.0.1 | latest 8.0.x | 10.0.14 | web | |
-| Microsoft.AspNetCore.Authorization | 6.0.1 | latest 8.0.x, or remove | 10.0.14 | both | Already in the ASP.NET Core shared framework |
-| Microsoft.AspNetCore.Identity / .Http.Abstractions / .Cors | 2.2.0 / 2.2.0 / 2.3.9 | remove | 2.3.13 | both | Old 2.x packages, already in the shared framework |
-| Microsoft.Extensions.* (Configuration, Hosting, Logging, FileProviders.Embedded, Identity.Stores, UserSecrets) | 6.0.0 – 6.0.1 | latest 8.0.x | 10.0.14 | both | |
-| Microsoft.Extensions.Caching.Memory | api 8.0.1, web 10.0.3 | api latest 8.0.x, web 10.0.14 | 10.0.14 | both | |
-| System.Text.Json | api 10.0.2 (direct), 6.0.0 (transitive) | 10.0.14 | 10.0.14 | both | The 6.0.0 transitive copy is the High advisory |
-| Microsoft.IdentityModel.Protocols.OpenIdConnect | 6.35.0 | 8.23.0 | 8.23.0 | api | |
-| Microsoft.VisualStudio.Web.CodeGeneration.Design | 6.0.1 | latest 8.0.x | 10.0.2 | web | Design-time only |
+| Package                                                                                                        | We use                                     | Stay on .NET 8                | Latest  | Repo      | Note                                              |
+| -------------------------------------------------------------------------------------------------------------- | ------------------------------------------ | ----------------------------- | ------- | --------- | ------------------------------------------------- |
+| Microsoft.EntityFrameworkCore (+ .SqlServer, .Sqlite, .Design, .Tools, .Proxies)                               | 8.0.23                                     | **8.0.33**                    | 10.0.14 | api       | Patch bump only                                   |
+| Microsoft.AspNetCore.Diagnostics.EntityFrameworkCore                                                           | 8.0.23                                     | **8.0.33**                    | 10.0.14 | api       |                                                   |
+| Microsoft.EntityFrameworkCore.InMemory                                                                         | 8.0.23, 6.0.1, 6.0.36, **7.0.0-preview.2** | **8.0.33** everywhere         | 10.0.14 | api tests | Mixed versions, one is a 2022 preview             |
+| Microsoft.EntityFrameworkCore.Sqlite                                                                           | 8.0.23, 6.0.14                             | **8.0.33**                    | 10.0.14 | api       | 6.0.14 is from a net6 side project                |
+| Microsoft.AspNetCore.Identity.EntityFrameworkCore / .Identity.UI / .Mvc.NewtonsoftJson                         | 6.0.1                                      | latest 8.0.x                  | 10.0.14 | api       | 6.0 packages inside a net8 app                    |
+| Microsoft.AspNetCore.TestHost                                                                                  | 6.0.8                                      | latest 8.0.x                  | 10.0.14 | api tests |                                                   |
+| Microsoft.AspNetCore.Authentication.OpenIdConnect                                                              | 6.0.1                                      | latest 8.0.x                  | 10.0.14 | web       |                                                   |
+| Microsoft.AspNetCore.Authorization                                                                             | 6.0.1                                      | latest 8.0.x, or remove       | 10.0.14 | both      | Already in the ASP.NET Core shared framework      |
+| Microsoft.AspNetCore.Identity / .Http.Abstractions / .Cors                                                     | 2.2.0 / 2.2.0 / 2.3.9                      | remove                        | 2.3.13  | both      | Old 2.x packages, already in the shared framework |
+| Microsoft.Extensions.* (Configuration, Hosting, Logging, FileProviders.Embedded, Identity.Stores, UserSecrets) | 6.0.0 – 6.0.1                              | latest 8.0.x                  | 10.0.14 | both      |                                                   |
+| Microsoft.Extensions.Caching.Memory                                                                            | api 8.0.1, web 10.0.3                      | api latest 8.0.x, web 10.0.14 | 10.0.14 | both      |                                                   |
+| System.Text.Json                                                                                               | api 10.0.2 (direct), 6.0.0 (transitive)    | 10.0.14                       | 10.0.14 | both      | The 6.0.0 transitive copy is the High advisory    |
+| Microsoft.IdentityModel.Protocols.OpenIdConnect                                                                | 6.35.0                                     | 8.23.0                        | 8.23.0  | api       |                                                   |
+| Microsoft.VisualStudio.Web.CodeGeneration.Design                                                               | 6.0.1                                      | latest 8.0.x                  | 10.0.2  | web       | Design-time only                                  |
 
 ### Third-party runtime packages
 
